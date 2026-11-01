@@ -559,6 +559,8 @@ mod win {
         /// The screen boxed and the option the box is on (kept while it's within the margin of the best).
         shown_screen: String,
         shown_best: Option<String>,
+        /// Where the boxes of the kept option are (put back after a click cleared them).
+        shown_boxes: Vec<tartarus::advisor::Rect>,
     }
 
     impl Worker {
@@ -605,6 +607,7 @@ mod win {
 
         fn handle(&mut self, ev: Event, live: bool) {
             self.last_event = Instant::now();
+            let card_click = matches!(ev, Event::InstrumentSelected);
             match ev {
                 Event::Day(cur, max) => {
                     // a new run: the day went back or the length changed (day 0 right after the Rumor/objective cards,
@@ -703,7 +706,8 @@ mod win {
                 }
                 Event::Click => self.due = Some(Instant::now() + SETTLE),
             }
-            if live {
+            // a card click (selecting an instrument) doesn't change the screen: the boxes stay
+            if live && !card_click {
                 set_boxes(Vec::new());
             }
         }
@@ -872,15 +876,21 @@ mod win {
                 });
             if !kept {
                 set_boxes(to_screen(&a.boxes));
+                self.shown_boxes = to_screen(&a.boxes);
                 self.shown_best = best.as_ref().map(|b| b.0.clone());
-            } else if let Some(k) = a
-                .options
-                .iter()
-                .position(|o| Some(&o.0) == self.shown_best.as_ref())
-            {
-                // the console shows the boxed option first, as a toss-up with the others
-                let o = a.options.remove(k);
-                a.options.insert(0, o);
+            } else if !self.shown_boxes.is_empty() {
+                set_boxes(self.shown_boxes.clone());
+            }
+            if kept {
+                if let Some(k) = a
+                    .options
+                    .iter()
+                    .position(|o| Some(&o.0) == self.shown_best.as_ref())
+                {
+                    // the console shows the boxed option first, as a toss-up with the others
+                    let o = a.options.remove(k);
+                    a.options.insert(0, o);
+                }
             }
             self.shown_screen = screen;
             let key = format!("{}|{:?}|{:?}", a.screen, a.board, self.shown_best);
@@ -982,6 +992,7 @@ mod win {
             ui_scale: None,
             shown_screen: String::new(),
             shown_best: None,
+            shown_boxes: Vec::new(),
         };
         // catch up on the end of the log: the day, an open pop-up, a new run since the last time
         let mut tail = match Tail::open(&log, 16 << 20) {

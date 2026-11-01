@@ -78,7 +78,15 @@ fn destination_value(s: &State, i: usize) -> f64 {
             Cell::Inmate(m) if s.has(crate::instruments::Instrument::SeveredIronMaiden) && maiden_ready(s, i, m) => {
                 k(31, 20.0) + m.rarity as f64
             }
-            Cell::Inmate(m) if !s.targets(i).is_empty() => k(1, 3.5) + k(2, 1.5) * m.rarity as f64,
+            Cell::Inmate(m) if !s.targets(i).is_empty() => {
+                k(1, 3.5)
+                    + k(2, 1.5) * m.rarity as f64
+                    + if matches!(s.objective, Some(Objective::SurvivalOfTheFittest { .. })) {
+                        k(35, 0.0)
+                    } else {
+                        0.0
+                    }
+            }
             // an Inmate worth replacing there (more so when an instrument makes the Replace pay)
             Cell::Inmate(m) if m.rarity > RARE && should_replace_at(s, i, m) => {
                 4.0 + 2.0 * m.rarity as f64

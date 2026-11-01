@@ -699,6 +699,17 @@ pub fn read_instrument_offer(f: &Frame) -> Vec<Option<(String, f32)>> {
     d.title_slots
         .iter()
         .map(|&x0| {
+            // only a title that's there: blank cards (still fading in) match anything faintly
+            let mut g: Vec<f32> = Vec::with_capacity(410 * 50);
+            for y in 470..520 {
+                for x in x0 + 20..x0 + 430 {
+                    g.push(f.gray(x, y));
+                }
+            }
+            g.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if g[g.len() * 99 / 100] < 100.0 {
+                return None;
+            }
             let mut best: (f32, &str) = (-1.0, "");
             for ty in (440..522).step_by(2) {
                 for dx in [-4i32, 0, 4] {
