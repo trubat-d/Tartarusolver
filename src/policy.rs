@@ -42,6 +42,37 @@ pub fn quick_value(s: &State) -> f64 {
 }
 
 fn destination_value(s: &State, i: usize) -> f64 {
+    plan_value(s, i) + rule_value(s, i)
+}
+
+/// What some instruments make of a destination beyond the cell itself: the walk's length, the doors around it,
+/// how full the board is.
+fn plan_value(s: &State, i: usize) -> f64 {
+    use crate::instruments::Instrument::*;
+    let steps = (i + CELLS - s.pos) % CELLS;
+    let locked = s.cells[i] == Cell::Locked;
+    let mut v = 0.0;
+    if s.has(LongChainedShackles) && steps >= 4 {
+        v += k(40, 8.0);
+    }
+    if s.has(ShortChainedShackles) && steps <= 3 {
+        v += k(39, 3.0);
+    }
+    if s.has(LostRingOfKeys) && locked {
+        let n = [(i + CELLS - 1) % CELLS, (i + 1) % CELLS]
+            .iter()
+            .filter(|&&j| s.cells[j] == Cell::Locked)
+            .count();
+        v += k(41, 2.0) * n as f64;
+    }
+    // Raging Beast's Agonizing Muzzle: a Consume pays most with 4 or fewer Inmates on the board
+    if s.has(AgonizingMuzzle) && locked && s.inmates().len() >= 4 {
+        v += k(38, -6.0);
+    }
+    v
+}
+
+fn rule_value(s: &State, i: usize) -> f64 {
     let incident = if s.has_incident(i) && s.cells[i] != Cell::Empty {
         if matches!(s.objective, Some(Objective::Undercurrents { .. })) {
             20.0
@@ -105,6 +136,16 @@ fn destination_value(s: &State, i: usize) -> f64 {
                     }
                     + if matches!(s.objective, Some(Objective::BehindCellDoors { .. })) {
                         k(25, 3.0)
+                    } else {
+                        0.0
+                    }
+                    // Executioner's Blacklist: open doors down to 5 locked, then every opening raises 2 Inmates
+                    + if s.has(crate::instruments::Instrument::ExecutionersBlacklist) {
+                        if s.locked().len() <= 6 {
+                            k(37, 40.0)
+                        } else {
+                            k(36, 6.0)
+                        }
                     } else {
                         0.0
                     }
@@ -221,22 +262,22 @@ pub const INSTRUMENT_RANK: &[Instrument] = &[
     Instrument::KinsCoinOfFate,
     Instrument::FilthyClaws,
     Instrument::SkeweredRatHeads,
+    Instrument::ExecutionersBlacklist,
     Instrument::AvengersCasket,
     Instrument::BarbedCollar,
     Instrument::HangmansNoose,
-    Instrument::ExecutionersBlacklist,
+    Instrument::LongChainedShackles,
     Instrument::SortingHook,
     Instrument::RavenousChains,
     Instrument::ScapegoatsGuillotine,
     Instrument::RustySaw,
-    Instrument::LongChainedShackles,
     Instrument::IronTongsOfLust,
     Instrument::BarbedWhip,
+    Instrument::AgonizingMuzzle,
     Instrument::SeveredIronMaiden,
     Instrument::FangedGuillotine,
     Instrument::LostRingOfKeys,
     Instrument::CrowdedBeastcage,
-    Instrument::AgonizingMuzzle,
     Instrument::FelonsDogTag,
     Instrument::ShortChainedShackles,
     Instrument::SearingBrandingIron,
