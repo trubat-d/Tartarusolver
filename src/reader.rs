@@ -174,7 +174,8 @@ fn data() -> &'static Data {
             .as_object()
             .unwrap()
             .iter()
-            .map(|(k, v)| (k.clone(), vecf(v)))
+            // "Name#2": another look of the same title (a selected card is brighter)
+            .map(|(k, v)| (k.split('#').next().unwrap().to_string(), vecf(v)))
             .collect();
         titles.sort_by(|a, b| a.0.cmp(&b.0));
         Data {
@@ -758,7 +759,9 @@ pub fn selected_instrument_slot(f: &Frame) -> Option<usize> {
 
 /// The instrument names the reader knows on cards.
 pub fn known_titles() -> Vec<String> {
-    data().titles.iter().map(|t| t.0.clone()).collect()
+    let mut t: Vec<String> = data().titles.iter().map(|t| t.0.clone()).collect();
+    t.dedup();
+    t
 }
 
 /// A board read as a solver state's cells: unread or uncertain cells are reported in the second value.

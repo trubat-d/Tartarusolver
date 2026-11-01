@@ -93,6 +93,8 @@ const CELL_XY: [(i32, i32); CELLS] = [
 /// What the screen can't show, kept between pictures and between starts of the overlay.
 #[derive(Clone, Debug, Default)]
 pub struct RunState {
+    /// The last offer's names by slot, to fill a card the reader misses on the next picture of the same offer.
+    pub last_offer: Vec<Option<String>>,
     pub rumor: Option<String>,
     pub instruments: Vec<String>,
     /// "prison-walk", "king-of-the-caged", or another name the engine doesn't play.
@@ -1261,7 +1263,24 @@ fn instrument_offer(f: &Frame, st: &mut RunState, futures: usize) -> Advice {
         screen: "choose a Torture Instrument".into(),
         ..Default::default()
     };
-    let read = reader::read_instrument_offer(f);
+    let mut read = reader::read_instrument_offer(f);
+    // same offer as the last picture (every card read agrees), one card missed: keep the name it had
+    if read.len() == st.last_offer.len()
+        && read.iter().any(|r| r.is_some())
+        && read
+            .iter()
+            .zip(&st.last_offer)
+            .all(|(r, l)| r.as_ref().map_or(true, |r| l.as_deref() == Some(r.0.as_str())))
+    {
+        for (r, l) in read.iter_mut().zip(&st.last_offer) {
+            if r.is_none() {
+                *r = l.clone().map(|n| (n, 0.0));
+            }
+        }
+    }
+    if read.iter().any(|r| r.is_some()) {
+        st.last_offer = read.iter().map(|r| r.as_ref().map(|r| r.0.clone())).collect();
+    }
     if let Some(k) = reader::selected_instrument_slot(f) {
         st.selected_instrument = read.get(k).cloned().flatten().map(|x| x.0);
         st.selected_guess = false;

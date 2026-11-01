@@ -74,6 +74,8 @@ mod win {
     const RECHECK: Duration = Duration::from_millis(350);
     /// Futures per option: about a second of work on a usual PC.
     const FUTURES: usize = 2000;
+    /// Looks pooled at one position before it's no longer solved again.
+    const SETTLED_LOOKS: f64 = 6.0;
     const HK_BOXES: i32 = 1;
     const HK_REDO: i32 = 2;
     const HK_QUIT: i32 = 3;
@@ -565,6 +567,8 @@ mod win {
         /// of 10, looks).
         pooled: std::collections::HashMap<String, (f64, f64, f64, f64)>,
         pooled_at: String,
+        /// The screen as last solved, coarsely (see `fingerprint`).
+        last_print: Vec<u8>,
         /// Where each option that came out best in a look is drawn.
         boxes_of: std::collections::HashMap<String, Vec<tartarus::advisor::Rect>>,
     }
@@ -816,6 +820,24 @@ mod win {
             self.due = Some(Instant::now());
         }
 
+        /// The picture's gray on a coarse grid (every 20 pixels), to tell a screen that changed from one that didn't.
+        fn fingerprint(f: &Frame) -> Vec<u8> {
+            let mut v = Vec::with_capacity(96 * 54);
+            for y in (10..1080).step_by(20) {
+                for x in (10..1920).step_by(20) {
+                    v.push(f.gray(x, y).clamp(0.0, 255.0) as u8);
+                }
+            }
+            v
+        }
+
+        fn changed_spots(a: &[u8], b: &[u8]) -> usize {
+            if a.len() != b.len() {
+                return usize::MAX;
+            }
+            a.iter().zip(b).filter(|(x, y)| x.abs_diff(**y) > 25).count()
+        }
+
         fn analyse(&mut self) {
             let shot = match capture() {
                 Ok(f) => f,
@@ -844,6 +866,15 @@ mod win {
             };
             let t = Instant::now();
             // one full look (no quick first guess: a box that appears a little later but doesn't hop)
+            // a screen already solved enough times that hasn't changed since isn't solved again: the computer's
+            // fans get a rest while a card screen stays up
+            let print = Self::fingerprint(&f);
+            let settled = self.pooled.values().map(|e| e.3).fold(0.0, f64::max) >= SETTLED_LOOKS;
+            if settled && Self::changed_spots(&print, &self.last_print) <= 6 {
+                self.due = Some(Instant::now() + RECHECK);
+                return;
+            }
+            self.last_print = print;
             let mut a = advise(&f, self.popup, &mut self.st, FUTURES);
             save_state(&self.st);
             // the same screen: same kind and the warden in the same cell (a cell misread between two looks doesn't
@@ -1028,6 +1059,7 @@ mod win {
             shown_boxes: Vec::new(),
             pooled: Default::default(),
             pooled_at: String::new(),
+            last_print: Vec::new(),
             boxes_of: Default::default(),
         };
         // catch up on the end of the log: the day, an open pop-up, a new run since the last time
