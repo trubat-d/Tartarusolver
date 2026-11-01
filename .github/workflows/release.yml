@@ -1,0 +1,45 @@
+# Builds tartarus-overlay.exe on Windows and publishes it as the release of the version in Cargo.toml.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --release
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Tartarusolver ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          draft: true
+          body: |
+            Download `tartarus-overlay.exe`, start it, then play Tartarus Prison. It draws a green box around the best
+            choice, nothing else: no console, no files. Ctrl+Alt+B boxes on/off, Ctrl+Alt+R read again, Ctrl+Alt+Q
+            quit (it also quits a couple of minutes after the game closes).
+      - name: Attach the file and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $out = gh release upload $tag target/release/tartarus-overlay.exe --clobber --repo ${{ github.repository }} 2>&1
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::upload failed: $out"; exit 1 }
+          gh release edit $tag --draft=false --repo ${{ github.repository }}
