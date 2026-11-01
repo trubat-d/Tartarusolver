@@ -125,6 +125,37 @@ mod win {
         }
     }
 
+    /// The solver's threads, all at below-normal priority so the game comes first: every thread for the first looks
+    /// after a click (the box appears fast), a quarter of them (env TARTARUS_THREADS) for the later looks that only
+    /// sharpen the estimates while the screen stays up.
+    fn pool(fast: bool) -> &'static rayon::ThreadPool {
+        static FAST: OnceLock<rayon::ThreadPool> = OnceLock::new();
+        static SLOW: OnceLock<rayon::ThreadPool> = OnceLock::new();
+        let all = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let build = |n: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n.max(2))
+                .start_handler(|_| unsafe {
+                    use windows::Win32::System::Threading::*;
+                    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                })
+                .build()
+                .expect("solver threads")
+        };
+        if fast {
+            FAST.get_or_init(|| build(all))
+        } else {
+            SLOW.get_or_init(|| {
+                build(
+                    std::env::var("TARTARUS_THREADS")
+                        .ok()
+                        .and_then(|t| t.parse().ok())
+                        .unwrap_or(all / 4),
+                )
+            })
+        }
+    }
+
     // ---------- the console and its log file ----------
 
     static DIAG: Mutex<Option<std::fs::File>> = Mutex::new(None);
@@ -887,7 +918,10 @@ mod win {
                 return;
             }
             self.last_print = print;
-            let mut a = advise(&f, self.popup, &mut self.st, FUTURES);
+            let fast = self.last_event.elapsed() < Duration::from_secs(3) || self.pooled.is_empty();
+            let st = &mut self.st;
+            let popup = self.popup;
+            let mut a = pool(fast).install(|| advise(&f, popup, st, FUTURES));
             save_state(&self.st);
             // the same screen: same kind and the warden in the same cell (a cell misread between two looks doesn't
             // make it a new screen)
@@ -1377,22 +1411,6 @@ mod win {
                 windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             );
         }
-        // the solver gets a quarter of the computer's threads (env TARTARUS_THREADS to change), each at below-normal
-        // priority, so the game and everything else stay smooth while it calculates
-        let threads = std::env::var("TARTARUS_THREADS")
-            .ok()
-            .and_then(|t| t.parse::<usize>().ok())
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism().map_or(4, |n| n.get()) / 4
-            })
-            .max(2);
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .start_handler(|_| unsafe {
-                use windows::Win32::System::Threading::*;
-                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-            })
-            .build_global();
         quick_edit_off();
         let home = std::env::var("USERPROFILE").map_err(|_| "no USERPROFILE")?;
         let (y, mo, d, h, mi, s) = now_parts();
