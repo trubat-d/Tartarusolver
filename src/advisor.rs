@@ -131,6 +131,28 @@ pub struct RunState {
     /// The screen and day the saved board was read on (for telling what changed since).
     pub board_screen: Option<&'static str>,
     pub board_day: Option<u32>,
+    /// The last screen advised that the player answers (a destination, a decision, an instrument): what the box was
+    /// on, to compare with what the player did once the next screen shows it.
+    pub pending: Option<Pending>,
+    /// The last screen recorded in the journal (one record per screen).
+    pub journal_key: String,
+    /// The run's end was recorded.
+    pub ended: bool,
+    /// The most Chromatics seen this run.
+    pub best_chromatics: u8,
+}
+
+/// A choice the box made, waiting for the next screen to show what the player did.
+#[derive(Clone, Debug)]
+pub struct Pending {
+    pub screen: String,
+    pub boxed: String,
+    /// The options as (label, expected Chromatics).
+    pub options: Vec<(String, f64)>,
+    pub day: Option<u32>,
+    pub warden: Option<usize>,
+    pub cells: Option<[Cell; CELLS]>,
+    pub instruments: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -395,7 +417,152 @@ fn options(s: &State, outs: &[solver::Outcome]) -> Vec<(String, f64, f64, f64)> 
 
 /// Reads the picture and gives the advice. `popup` is what the log says is open; `state` is updated with what
 /// the picture shows (the board, the warden, Prison Walk's tiles).
+/// The advice on a picture, with the journal of the run (predictions, the box against what the player did, the end)
+/// added to its observations.
 pub fn advise(f: &Frame, popup: Popup, st: &mut RunState, futures: usize) -> Advice {
+    let mut a = advise_screen(f, popup, st, futures);
+    journal(st, popup, &mut a);
+    a
+}
+
+/// The warden's cell in a board line ("at 6 | ...").
+fn line_warden(line: &str) -> Option<usize> {
+    line.strip_prefix("at ")?
+        .split_whitespace()
+        .next()?
+        .parse::<usize>()
+        .ok()
+        .map(|n| n - 1)
+}
+
+fn kind_of(label: &str) -> &'static str {
+    let l = label.to_lowercase();
+    if l.starts_with("go to") {
+        "go"
+    } else if l.starts_with("consume") {
+        "consume"
+    } else if l.starts_with("replace") {
+        "replace"
+    } else if l.starts_with("hunt") {
+        "hunt"
+    } else if l.starts_with("take") {
+        "take"
+    } else if l.starts_with("re-roll") {
+        "reroll"
+    } else {
+        "end"
+    }
+}
+
+fn journal(st: &mut RunState, popup: Popup, a: &mut Advice) {
+    let day = st.day.map(|d| d.0);
+    let chromatics = st.board.as_ref().map(|b| b.chromatics).unwrap_or(0);
+    st.best_chromatics = st.best_chromatics.max(chromatics);
+    if popup == Popup::End {
+        if !st.ended {
+            st.ended = true;
+            a.observations.push(json!({"kind": "run_end", "chromatics": st.best_chromatics, "day": day,
+                "instruments": st.instruments, "objective": st.objective, "rumor": st.rumor,
+                "ultimates": st.board.as_ref().map(|b| b.cells.iter().filter(|c| matches!(c, Cell::Inmate(m) if m.rarity == ULTIMATE)).count())}));
+        }
+        st.pending = None;
+        return;
+    }
+    let warden = a.board.as_deref().and_then(line_warden);
+    let cells = st.board.as_ref().map(|b| b.cells);
+    // what the player did on the last screen, now that this one shows it
+    if let Some(p) = st.pending.clone() {
+        let moved_on = a.screen != p.screen || warden != p.warden || cells != p.cells;
+        let took: Option<String> = match p.screen.as_str() {
+            "choose a destination" | "choose any cell" if warden.is_some() && warden != p.warden => warden.map(|w| {
+                if w == 0 {
+                    "go:office".to_string()
+                } else {
+                    format!("go:{}", w + 1)
+                }
+            }),
+            "choose a Torture Instrument" if st.instruments.len() > p.instruments => {
+                st.instruments.last().map(|n| format!("take:{n}"))
+            }
+            "make your decision" if a.screen == "choose what to Consume" => Some("consume".into()),
+            "make your decision" if moved_on && warden.is_some() => match (p.cells, cells, p.warden) {
+                (Some(old), Some(new), Some(w)) => {
+                    let eaten = (0..CELLS).any(|n| {
+                        n != w && matches!(old[n], Cell::Inmate(_)) && new[n] == Cell::Locked
+                    });
+                    Some(if eaten {
+                        "consume".into()
+                    } else if old[w] != new[w] {
+                        "replace".into()
+                    } else {
+                        "end".into()
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(t) = took {
+            let boxed = match kind_of(&p.boxed) {
+                "go" => {
+                    if p.boxed.contains("Interrogation") {
+                        "go:office".to_string()
+                    } else {
+                        p.boxed
+                            .split_whitespace()
+                            .nth(3)
+                            .map(|n| format!("go:{n}"))
+                            .unwrap_or_default()
+                    }
+                }
+                "take" => format!("take:{}", p.boxed.trim_start_matches("Take ")),
+                k => k.to_string(),
+            };
+            let value = |key: &str| {
+                p.options
+                    .iter()
+                    .find(|o| {
+                        let k = kind_of(&o.0);
+                        match k {
+                            "go" if key == "go:office" => o.0.contains("Interrogation"),
+                            "go" => o.0.split_whitespace().nth(3).map(|n| format!("go:{n}")).as_deref() == Some(key),
+                            "take" => format!("take:{}", o.0.trim_start_matches("Take ")) == key,
+                            _ => k == key,
+                        }
+                    })
+                    .map(|o| o.1)
+            };
+            a.observations.push(json!({"kind": "choice", "screen": p.screen, "day": p.day, "boxed": boxed,
+                "took": t, "followed": boxed == t, "boxed_value": value(&boxed), "took_value": value(&t),
+                "instruments": st.instruments, "objective": st.objective, "rumor": st.rumor}));
+            st.pending = None;
+        }
+    }
+    // this screen's prediction, once per screen
+    let Some(best) = a.options.first().cloned() else { return };
+    let key = format!("{}|{:?}|{:?}", a.screen, day, a.board);
+    if key != st.journal_key {
+        st.journal_key = key;
+        a.observations.push(json!({"kind": "predict", "screen": a.screen, "day": day, "chromatics": chromatics,
+            "expect": best.1, "margin": best.2, "reach10": best.3, "best": best.0}));
+    }
+    if matches!(
+        a.screen.as_str(),
+        "choose a destination" | "choose any cell" | "make your decision" | "choose a Torture Instrument"
+    ) {
+        st.pending = Some(Pending {
+            screen: a.screen.clone(),
+            boxed: best.0.clone(),
+            options: a.options.iter().map(|o| (o.0.clone(), o.1)).collect(),
+            day,
+            warden,
+            cells,
+            instruments: st.instruments.len(),
+        });
+    }
+}
+
+fn advise_screen(f: &Frame, popup: Popup, st: &mut RunState, futures: usize) -> Advice {
     let mut a = Advice::default();
     if f.w != reader::WIDTH || f.h != reader::HEIGHT {
         a.screen = "unreadable".into();
