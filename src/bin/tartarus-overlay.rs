@@ -985,13 +985,19 @@ mod win {
         if let Some(b) = &a.board {
             say!("  read: {b}");
         }
+        let unit = if a.unit.is_empty() {
+            "Chromatics"
+        } else {
+            a.unit
+        };
         for (k, (d, c, m, full)) in a.options.iter().enumerate() {
             say!(
-                "  {} {:<46} {:>5.2} ± {:.2} Chromatics  {:>3.0}% reach 10",
+                "  {} {:<46} {:>5.2} ± {:.2} {}  {:>3.0}% reach 10",
                 if k == 0 { "=>" } else { "  " },
                 d,
                 c,
                 m,
+                unit,
                 full * 100.0
             );
         }

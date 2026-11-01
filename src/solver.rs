@@ -166,8 +166,41 @@ fn play(mut s: State, a: Action, rng: &mut Rng) -> State {
         }
     }
     policy::end_day(&mut s);
-    policy::finish(&mut s, rng);
+    match horizon() {
+        Some(h) => policy::finish_for(&mut s, rng, h),
+        None => policy::finish(&mut s, rng),
+    }
     s
+}
+
+/// Futures cut short after this many days and finished by the board value (env TH), when a model is loaded.
+fn horizon() -> Option<u32> {
+    static H: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *H.get_or_init(|| {
+        std::env::var("TH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&h: &u32| h > 0 && crate::value::has_model())
+    })
+}
+
+/// A future's end as the solver counts it: the run's result, or, for a future cut short, the board value's estimate.
+fn result(end: &State) -> (f64, f64, f64, f64) {
+    if end.days_left > 0 {
+        if let Some(m) = crate::value::model() {
+            let c = m.eval(end).clamp(end.chromatics as f64, MAX_CHROMATICS as f64);
+            let full = crate::value::model10().map_or(0.0, |m10| m10.eval(end).clamp(0.0, 1.0));
+            let ult = end.ultimates() as f64;
+            let score = c * 100_000.0 + full * 300_000.0 + ult * 10.0;
+            return (score, c, ult, full);
+        }
+    }
+    (
+        end.score(),
+        end.chromatics as f64,
+        end.ultimates() as f64,
+        (end.chromatics >= MAX_CHROMATICS) as u8 as f64,
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +215,8 @@ pub struct Outcome {
     pub full: f64,
     /// The margin on `chromatics` (two standard errors): options closer than this are a toss-up.
     pub margin: f64,
+    /// The margin on `ultimates`.
+    pub ult_margin: f64,
 }
 
 /// The average over `futures` futures of the run that `start` plays (each future its own random draws, the same
@@ -190,33 +225,29 @@ fn average(
     futures: usize,
     seed: u64,
     start: impl Fn(&mut Rng) -> State + Sync,
-) -> (f64, f64, f64, f64, f64) {
-    let (score, chroma, ult, full, sq) = (0..futures)
+) -> (f64, f64, f64, f64, f64, f64) {
+    let (score, chroma, ult, full, sq, usq) = (0..futures)
         .into_par_iter()
         .map(|k| {
             let mut rng = Rng::new(seed.wrapping_add(k as u64 * 0x2545_F491_4F6C_DD1D));
             let end = start(&mut rng);
-            let c = end.chromatics as f64;
-            (
-                end.score(),
-                c,
-                end.ultimates() as f64,
-                (end.chromatics >= MAX_CHROMATICS) as u8 as f64,
-                c * c,
-            )
+            let (score, c, ult, full) = result(&end);
+            (score, c, ult, full, c * c, ult * ult)
         })
         .reduce(
-            || (0.0, 0.0, 0.0, 0.0, 0.0),
-            |x, y| (x.0 + y.0, x.1 + y.1, x.2 + y.2, x.3 + y.3, x.4 + y.4),
+            || (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            |x, y| (x.0 + y.0, x.1 + y.1, x.2 + y.2, x.3 + y.3, x.4 + y.4, x.5 + y.5),
         );
     let n = futures as f64;
     let mean = chroma / n;
     let var = (sq / n - mean * mean).max(0.0);
-    (score / n, mean, ult / n, full / n, 2.0 * (var / n).sqrt())
+    let um = ult / n;
+    let uvar = (usq / n - um * um).max(0.0);
+    (score / n, mean, um, full / n, 2.0 * (var / n).sqrt(), 2.0 * (uvar / n).sqrt())
 }
 
 fn evaluate_one(s: &State, a: Action, futures: usize, seed: u64) -> Outcome {
-    let (score, chromatics, ultimates, full, margin) =
+    let (score, chromatics, ultimates, full, margin, ult_margin) =
         average(futures, seed, |rng| play(s.clone(), a, rng));
     Outcome {
         action: a,
@@ -225,6 +256,7 @@ fn evaluate_one(s: &State, a: Action, futures: usize, seed: u64) -> Outcome {
         ultimates,
         full,
         margin,
+        ult_margin,
     }
 }
 
@@ -235,9 +267,11 @@ pub fn evaluate_adaptive(s: &State, phase: &Phase, futures: usize, seed: u64) ->
     if out.len() < 2 {
         return out;
     }
-    let best = out[0].chromatics;
+    let at10 = s.chromatics >= MAX_CHROMATICS;
+    let val = |o: &Outcome| if at10 { (o.ultimates, o.ult_margin) } else { (o.chromatics, o.margin) };
+    let best = val(&out[0]).0;
     let close: Vec<usize> = (0..out.len())
-        .filter(|&k| best - out[k].chromatics <= out[0].margin.max(out[k].margin))
+        .filter(|&k| best - val(&out[k]).0 <= val(&out[0]).1.max(val(&out[k]).1))
         .take(4)
         .collect();
     if close.len() < 2 {
@@ -260,7 +294,7 @@ pub fn evaluate_treasure_pairs(s: &State, futures: usize, seed: u64) -> Vec<(Out
             Treasure::ALL
                 .into_iter()
                 .map(|t2| {
-                    let (score, chromatics, ultimates, full, margin) =
+                    let (score, chromatics, ultimates, full, margin, ult_margin) =
                         average(futures, seed, |rng| {
                             let mut c = s.clone();
                             c.treasure(t1, rng);
@@ -281,6 +315,7 @@ pub fn evaluate_treasure_pairs(s: &State, futures: usize, seed: u64) -> Vec<(Out
                             ultimates,
                             full,
                             margin,
+                            ult_margin,
                         },
                         t2,
                     )

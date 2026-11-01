@@ -264,7 +264,7 @@ impl RunState {
         }
     }
 
-    fn state(&self, cells: [Cell; CELLS], warden: usize, chromatics: u8) -> State {
+    pub fn state(&self, cells: [Cell; CELLS], warden: usize, chromatics: u8) -> State {
         let mut s = State::new(cells, warden, self.days_left(), self.setup());
         s.chromatics = chromatics.min(MAX_CHROMATICS);
         s.objective = match self.objective.as_deref() {
@@ -379,6 +379,8 @@ pub struct Advice {
     pub notes: Vec<String>,
     /// What the game did, for measuring its odds (JSON lines): doors opened, Replaces, destinations offered.
     pub observations: Vec<Value>,
+    /// What the options' numbers are: "Chromatics", or "Ultimates" once the 10 Chromatics are in.
+    pub unit: &'static str,
 }
 
 fn board_line(cells: &[Cell; CELLS], warden: usize, chromatics: u8) -> String {
@@ -409,9 +411,18 @@ fn run_solver(s: &State, phase: &Phase, futures: usize) -> Vec<solver::Outcome> 
     solver::evaluate_adaptive(s, phase, futures, 7)
 }
 
+/// The options as the console shows them: expected Chromatics, or, once the 10 are in, expected Ultimates (the red
+/// beasts) left on the board at the end.
 fn options(s: &State, outs: &[solver::Outcome]) -> Vec<(String, f64, f64, f64)> {
+    let at10 = s.chromatics >= MAX_CHROMATICS;
     outs.iter()
-        .map(|o| (o.action.describe(s), o.chromatics, o.margin, o.full))
+        .map(|o| {
+            if at10 {
+                (o.action.describe(s), o.ultimates, o.ult_margin, o.full)
+            } else {
+                (o.action.describe(s), o.chromatics, o.margin, o.full)
+            }
+        })
         .collect()
 }
 
@@ -421,6 +432,11 @@ fn options(s: &State, outs: &[solver::Outcome]) -> Vec<(String, f64, f64, f64)> 
 /// added to its observations.
 pub fn advise(f: &Frame, popup: Popup, st: &mut RunState, futures: usize) -> Advice {
     let mut a = advise_screen(f, popup, st, futures);
+    a.unit = if st.board.as_ref().is_some_and(|b| b.chromatics >= MAX_CHROMATICS) {
+        "Ultimates"
+    } else {
+        "Chromatics"
+    };
     journal(st, popup, &mut a);
     a
 }

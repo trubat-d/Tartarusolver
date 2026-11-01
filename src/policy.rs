@@ -22,7 +22,8 @@ fn k(i: usize, default: f64) -> f64 {
 /// A rough worth of a board in the middle of a run, for comparing treasures and targets: the learned board value when
 /// one is loaded and knob 50 is on, otherwise hand-set weights.
 pub fn quick_value(s: &State) -> f64 {
-    if k(50, 1.0) > 0.0 {
+    // once the 10 Chromatics are in, the board value can't tell boards apart (all 10): the Ultimates are what counts
+    if k(50, 1.0) > 0.0 && s.chromatics < MAX_CHROMATICS {
         if let Some(m) = crate::value::model() {
             return m.eval(s) * 100_000.0
                 + s.picks as f64 * k(52, 30_000.0)
@@ -195,8 +196,10 @@ pub fn choose_destination(s: &State, options: &[usize], rng: &mut Rng) -> usize 
                 for _ in 0..n {
                     let mut c = s.clone();
                     c.go(o, rng);
-                    resolve_picks(&mut c, rng);
-                    decide(&mut c, rng);
+                    if k(53, 0.0) < 0.5 {
+                        resolve_picks(&mut c, rng);
+                        decide(&mut c, rng);
+                    }
                     end_day(&mut c);
                     v += m.eval(&c) / n as f64;
                 }
@@ -601,6 +604,21 @@ pub fn end_day(s: &mut State) {
 }
 
 /// Plays the run to its end.
+/// Plays at most `days` more days.
+pub fn finish_for(s: &mut State, rng: &mut Rng, days: u32) {
+    let stop = s.days_left.saturating_sub(days);
+    while s.days_left > stop {
+        s.morning(rng);
+        resolve_picks(s, rng);
+        let options = s.destinations(rng);
+        let d = choose_destination(s, &options, rng);
+        s.go(d, rng);
+        resolve_picks(s, rng);
+        decide(s, rng);
+        end_day(s);
+    }
+}
+
 pub fn finish(s: &mut State, rng: &mut Rng) {
     while s.days_left > 0 {
         s.morning(rng);
