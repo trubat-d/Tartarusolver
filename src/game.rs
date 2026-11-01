@@ -896,7 +896,7 @@ impl State {
             rarity = meal.rarity + 2;
         }
         if e.code == Code::Rat && self.has(SkeweredRatHeads) {
-            rarity += 1;
+            rarity += 2;
         }
         if self.has(AgonizingMuzzle) && on_board <= 4 {
             rarity += 2;

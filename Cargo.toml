@@ -1,7 +1,7 @@
 [package]
 name = "tartarus"
 description = "Screen overlay for Tartarus Prison in Torchlight: Infinite: boxes the best choice (read-only advice; never plays the game)"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2021"
 license = "MIT"
 

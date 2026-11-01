@@ -28,7 +28,7 @@ pub enum Instrument {
     AvengersCasket,
     /// Each morning, the highest-rarity Inmate removes both ring neighbours; 40% per removal for an extra tier.
     RavenousChains,
-    /// Rats eat Rats; a Rat's Consume gains an extra tier.
+    /// Rats eat Rats of their rarity; a Rat's Consume gains 2 extra tiers.
     SkeweredRatHeads,
     /// Doors never hold a Normal.
     SortingHook,

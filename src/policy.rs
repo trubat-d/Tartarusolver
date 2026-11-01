@@ -71,7 +71,7 @@ fn destination_value(s: &State, i: usize) -> f64 {
                         0.0
                     }
                     + if matches!(s.objective, Some(Objective::BehindCellDoors { .. })) {
-                        3.0
+                        k(25, 3.0)
                     } else {
                         0.0
                     }
