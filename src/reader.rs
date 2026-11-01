@@ -746,6 +746,19 @@ pub fn treasure_header(f: &Frame) -> bool {
     share(600, 780) > 0.2 && share(820, 1100) > 0.2
 }
 
+/// The label left of the top-right eye ("View Prison Status" / "Return to Selection"), shown over the Warden's Treasure
+/// and its board view (measured: 0.08-0.10 of the area lit there, a plain board about 0.01).
+pub fn eye_label(f: &Frame) -> bool {
+    let (mut b, mut n) = (0.0, 0.0);
+    for y in 120..155 {
+        for x in 1575..1795 {
+            b += (f.gray(x, y) > 75.0) as u8 as f32;
+            n += 1.0;
+        }
+    }
+    b / n > 0.05
+}
+
 /// Which instrument card is selected (its orange frame), if any.
 pub fn selected_instrument_slot(f: &Frame) -> Option<usize> {
     let d = data();

@@ -1036,6 +1036,9 @@ mod win {
                     Popup::Instrument
                 } else if tartarus::reader::treasure_header(&f) {
                     Popup::Treasure
+                } else if self.guessed_popup == Popup::Treasure && tartarus::reader::eye_label(&f) {
+                    // the eye clicked: the board with "Return to Selection", still the treasure's
+                    Popup::Treasure
                 } else {
                     Popup::None
                 };
@@ -1386,10 +1389,10 @@ mod win {
                     quit();
                 }
             }
-            // when the log is quiet (some computers write it late, or it's another install's log), the screen itself is
-            // watched: a big change (a new screen) gets a look, as a log line would
+            // when the log is quiet (some computers write it late, or it's another install's log) or doesn't tell the
+            // pop-ups, the screen itself is watched: a big change (a new screen) gets a look, as a log line would
             if w.due.is_none()
-                && last_growth.elapsed() > Duration::from_secs(3)
+                && (last_growth.elapsed() > Duration::from_secs(3) || !w.log_popups)
                 && last_poll.elapsed() > Duration::from_millis(700)
             {
                 last_poll = Instant::now();
