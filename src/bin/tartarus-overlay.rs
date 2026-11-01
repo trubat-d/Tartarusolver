@@ -73,7 +73,7 @@ mod win {
     /// Looks again this soon after a picture, until two in a row agree.
     const RECHECK: Duration = Duration::from_millis(350);
     /// Futures per option: about a second of work on a usual PC.
-    const FUTURES: usize = 3000;
+    const FUTURES: usize = 2000;
     const HK_BOXES: i32 = 1;
     const HK_REDO: i32 = 2;
     const HK_QUIT: i32 = 3;

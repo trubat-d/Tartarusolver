@@ -19,8 +19,20 @@ fn k(i: usize, default: f64) -> f64 {
     .unwrap_or(default)
 }
 
-/// A rough worth of a board in the middle of a run, for comparing treasures and targets.
+/// A rough worth of a board in the middle of a run, for comparing treasures and targets: the learned board value when
+/// one is loaded and knob 50 is on, otherwise hand-set weights.
 pub fn quick_value(s: &State) -> f64 {
+    if k(50, 1.0) > 0.0 {
+        if let Some(m) = crate::value::model() {
+            return m.eval(s) * 100_000.0
+                + s.picks as f64 * k(52, 30_000.0)
+                + hand_value(s) * k(51, 0.0);
+        }
+    }
+    hand_value(s)
+}
+
+fn hand_value(s: &State) -> f64 {
     let w = [1.0, k(14, 4.2), k(15, 18.0), k(13, 42.0), k(12, 70.0)];
     let board: f64 = s
         .inmates()
