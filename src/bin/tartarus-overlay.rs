@@ -94,6 +94,8 @@ mod win {
         game: Option<(i32, i32, i32, i32)>,
         show: bool,
         changed: bool,
+        /// The line drawn at the top: the boxed option's expected Chromatics and chance of 10.
+        line: Option<String>,
     }
 
     static SHARED: OnceLock<Arc<Mutex<Shared>>> = OnceLock::new();
@@ -111,6 +113,14 @@ mod win {
         let mut s = shared().lock().unwrap();
         if s.boxes != b {
             s.boxes = b;
+            s.changed = true;
+        }
+    }
+
+    fn set_line(l: Option<String>) {
+        let mut s = shared().lock().unwrap();
+        if s.line != l {
+            s.line = l;
             s.changed = true;
         }
     }
@@ -297,6 +307,23 @@ mod win {
         let (x, y, w, h) = game_rect(hwnd).ok_or("the game is minimized")?;
         shared().lock().unwrap().game = Some((x, y, w, h));
         unsafe {
+            // the line at the top centre: white text on a dark band
+            if let Some(line) = line {
+                let scale = (gh / 400).max(2) as usize;
+                let (tw, th, mask) = tartarus::font::render(&line, scale);
+                let pad = 4 * scale as i32;
+                let (tx, ty) = (gw / 2 - tw as i32 / 2, 6 * scale as i32);
+                for y in ty - pad..ty + th as i32 + pad {
+                    for x in tx - pad..tx + tw as i32 + pad {
+                        put(x, y, [0, 0, 0, 190]);
+                    }
+                }
+                for (i, &on) in mask.iter().enumerate() {
+                    if on {
+                        put(tx + (i % tw) as i32, ty + (i / tw) as i32, [120, 255, 160, 255]);
+                    }
+                }
+            }
             let screen = GetDC(HWND::default());
             let mem = CreateCompatibleDC(screen);
             let bi = BITMAPINFO {
@@ -950,6 +977,12 @@ mod win {
                     a.options.insert(0, o);
                 }
             }
+            set_line(
+                a.options
+                    .first()
+                    .filter(|_| !self.shown_boxes.is_empty())
+                    .map(|o| tartarus::font::chance_line(a.unit, o.1, o.3)),
+            );
             self.shown_screen = screen;
             let key = format!("{}|{:?}|{:?}", a.screen, a.board, self.shown_best);
             // look again soon until the screen holds still (the first look may catch the end of an animation);
@@ -1196,10 +1229,10 @@ mod win {
     // ---------- the window that draws the boxes ----------
 
     fn draw(hwnd: HWND) {
-        let (boxes, game, show) = {
+        let (boxes, game, show, line) = {
             let mut s = shared().lock().unwrap();
             s.changed = false;
-            (s.boxes.clone(), s.game, s.show)
+            (s.boxes.clone(), s.game, s.show, s.line.clone())
         };
         unsafe {
             let Some((gx, gy, gw, gh)) = game.filter(|_| show && !boxes.is_empty()) else {

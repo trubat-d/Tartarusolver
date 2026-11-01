@@ -2,6 +2,7 @@
 //! options you have now. Read-only advice: it never plays the game.
 
 pub mod advisor;
+pub mod font;
 pub mod game;
 pub mod input;
 pub mod instruments;
