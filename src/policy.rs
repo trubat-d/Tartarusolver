@@ -53,6 +53,31 @@ fn destination_value(s: &State, i: usize) -> f64 {
     };
     incident
         + match s.cells[i] {
+            // a marked Lion or prey: going there can only break the mark
+            Cell::Inmate(_) if s.hunt.is_some_and(|h| h.lion == i || h.prey == i) => k(28, -3.0),
+            // Blood-Stained Trap: a Lion that can mark a prey
+            Cell::Inmate(m)
+                if s.has(crate::instruments::Instrument::BloodStainedTrap)
+                    && s.hunt.is_none()
+                    && m.code == crate::game::Code::Lion
+                    && hunt_worth(s, m)
+                    && !s.targets(i).is_empty() =>
+            {
+                k(27, 30.0) + k(2, 1.5) * m.rarity as f64
+            }
+            // Iron Tongs of Lust: a Tusk-marked Elephant to replace
+            Cell::Inmate(m)
+                if s.has(crate::instruments::Instrument::IronTongsOfLust)
+                    && s.tusks.contains(&i)
+                    && m.code == crate::game::Code::Elephant
+                    && k(29, 1.0) > 0.5 =>
+            {
+                k(30, 12.0) + s.inmates().len().min(5) as f64
+            }
+            // Severed Iron Maiden: a Replace that comes in 3 tiers up
+            Cell::Inmate(m) if s.has(crate::instruments::Instrument::SeveredIronMaiden) && maiden_ready(s, i, m) => {
+                k(31, 20.0) + m.rarity as f64
+            }
             Cell::Inmate(m) if !s.targets(i).is_empty() => k(1, 3.5) + k(2, 1.5) * m.rarity as f64,
             // an Inmate worth replacing there (more so when an instrument makes the Replace pay)
             Cell::Inmate(m) if m.rarity > RARE && should_replace_at(s, i, m) => {
@@ -182,32 +207,32 @@ pub fn choose_treasure(s: &State, rng: &mut Rng) -> Treasure {
 /// The Torture Instruments from best to worst, as measured by `tartarus rank-instruments` (each held alone from
 /// day 1 of a fresh run, 20,000 runs each).
 pub const INSTRUMENT_RANK: &[Instrument] = &[
+    Instrument::BloodStainedTrap,
     Instrument::IronCrown,
     Instrument::ElephantFootMaul,
     Instrument::KinsCoinOfFate,
     Instrument::FilthyClaws,
+    Instrument::SkeweredRatHeads,
     Instrument::AvengersCasket,
     Instrument::BarbedCollar,
-    Instrument::BloodStainedTrap,
     Instrument::HangmansNoose,
     Instrument::ExecutionersBlacklist,
-    Instrument::SkeweredRatHeads,
     Instrument::SortingHook,
     Instrument::RavenousChains,
     Instrument::ScapegoatsGuillotine,
     Instrument::RustySaw,
     Instrument::LongChainedShackles,
+    Instrument::IronTongsOfLust,
     Instrument::BarbedWhip,
+    Instrument::SeveredIronMaiden,
     Instrument::FangedGuillotine,
     Instrument::LostRingOfKeys,
     Instrument::CrowdedBeastcage,
     Instrument::AgonizingMuzzle,
     Instrument::FelonsDogTag,
     Instrument::ShortChainedShackles,
-    Instrument::SeveredIronMaiden,
     Instrument::SearingBrandingIron,
     Instrument::GaolersExecutionAxe,
-    Instrument::IronTongsOfLust,
     Instrument::WardensScales,
     Instrument::BurningStake,
     Instrument::IronPestle,
@@ -262,18 +287,59 @@ pub fn resolve_picks(s: &mut State, rng: &mut Rng) {
 pub fn should_hunt(s: &State) -> bool {
     s.can_hunt()
         && s.days_left > HUNT_MORNINGS as u32
-        && s.inmate(s.pos).is_some_and(|m| m.rarity <= RARE)
+        && s.inmate(s.pos).is_some_and(|m| hunt_worth(s, m))
         && !s.targets(s.pos).is_empty()
+}
+
+/// A Lion worth marking a prey with: low enough that its mornings of growth aren't wasted past Chromatic.
+fn hunt_worth(_s: &State, m: Inmate) -> bool {
+    m.rarity as f64 <= k(26, ULTIMATE as f64)
+}
+
+/// The prey to mark: the highest rarity (both climb, and a high prey reaches Chromatic too).
+pub fn choose_prey(s: &State, targets: &[usize], rng: &mut Rng) -> usize {
+    if k(32, 1.0) < 0.5 {
+        return choose_target(s, targets, rng);
+    }
+    *targets
+        .iter()
+        .max_by_key(|&&t| s.inmate(t).map_or(0, |m| m.rarity))
+        .unwrap()
+}
+
+/// Severed Iron Maiden: as many Inmates above as below this one, so a Replace comes in 3 tiers up.
+fn maiden_ready(s: &State, at: usize, m: Inmate) -> bool {
+    if m.rarity > LEGENDARY {
+        return false;
+    }
+    let (mut above, mut below) = (0, 0);
+    for j in s.inmates() {
+        if j == at {
+            continue;
+        }
+        let r = s.inmate(j).unwrap().rarity;
+        if r > m.rarity {
+            above += 1;
+        } else if r < m.rarity {
+            below += 1;
+        }
+    }
+    above == below
 }
 
 /// Keeps Consuming from the current cell while there are targets. Returns whether anything was eaten.
 pub fn consume_chain(s: &mut State, rng: &mut Rng) -> bool {
     let mut ate = false;
     loop {
-        if s.hunt.is_some_and(|h| h.lion == s.pos) {
+        if s.hunt.is_some_and(|h| h.lion == s.pos || (k(33, 1.0) > 0.5 && h.prey == s.pos)) {
             return ate;
         }
-        let t = s.targets(s.pos);
+        let mut t = s.targets(s.pos);
+        if k(33, 1.0) > 0.5 {
+            if let Some(h) = s.hunt {
+                t.retain(|&j| j != h.prey && j != h.lion);
+            }
+        }
         if t.is_empty() {
             return ate;
         }
@@ -318,6 +384,15 @@ fn should_replace_at(s: &State, at: usize, m: Inmate) -> bool {
             return true;
         }
     }
+    // Iron Tongs of Lust: replacing a Tusk-marked Elephant raises 4 others
+    if s.has(IronTongsOfLust)
+        && s.tusks.contains(&at)
+        && m.code == crate::game::Code::Elephant
+        && k(29, 1.0) > 0.5
+        && m.rarity <= LEGENDARY
+    {
+        return true;
+    }
     // Hangman's Noose brings Rare or better; the Burning Stake often a Legendary
     if s.has(HangmansNoose) && m.rarity <= RARE {
         return true;
@@ -352,12 +427,23 @@ pub fn decide(s: &mut State, rng: &mut Rng) {
                     .filter(|&j| s.inmate(j).is_some())
                     .collect();
                 if !t.is_empty() {
-                    let prey = choose_target(s, &t, rng);
+                    let prey = choose_prey(s, &t, rng);
                     s.start_hunt(prey);
                     return;
                 }
             }
-            if !consume_chain(s, rng) && should_replace(s, m) {
+            let marked = s.hunt.is_some_and(|h| h.lion == s.pos || h.prey == s.pos);
+            // Severed Iron Maiden: a low Inmate ready for 3 tiers is worth more replaced than eating
+            if !marked
+                && s.has(Instrument::SeveredIronMaiden)
+                && (m.rarity as f64) <= k(34, 2.0)
+                && maiden_ready(s, s.pos, m)
+            {
+                let pos = s.pos;
+                s.replace(pos, rng);
+                return;
+            }
+            if !consume_chain(s, rng) && !marked && should_replace(s, m) {
                 let pos = s.pos;
                 s.replace(pos, rng);
             }
