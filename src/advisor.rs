@@ -39,6 +39,12 @@ const fn r(x0: i32, y0: i32, x1: i32, y1: i32) -> Rect {
 /// destination cards, measured for the decision buttons).
 fn bottom(count: usize, k: usize) -> Rect {
     match count {
+        4 => [
+            r(278, 745, 608, 924),
+            r(623, 745, 953, 924),
+            r(968, 745, 1298, 924),
+            r(1313, 745, 1643, 924),
+        ][k.min(3)],
         3 => [
             r(450, 745, 781, 924),
             r(795, 745, 1126, 924),
@@ -944,7 +950,8 @@ fn destination(b: &BoardRead, warden: usize, st: &mut RunState, futures: usize) 
     a
 }
 
-/// How many buttons the decision screen shows (20: the two are Consume and End): 3 when the leftmost card's place (x 470-600) is textured, 2 when only
+/// How many buttons the decision screen shows (20: the two are Consume and End): 4 when the place left of the
+/// three-button row (x 300-430) is textured, 3 when the leftmost card's place (x 470-600) is textured, 2 when only
 /// the middle-left place (x 640-780) is, None when it can't tell (screen fading).
 fn button_count(f: &Frame) -> Option<usize> {
     let tex = |x0: usize, x1: usize| -> f64 {
@@ -979,7 +986,9 @@ fn button_count(f: &Frame) -> Option<usize> {
         }
     }
     let red = red / n;
-    if tex(470, 600) > 2.0 {
+    if tex(300, 430) > 2.0 {
+        Some(4) // Consume, Replace, Hunt, End (Blood-Stained Trap on a Lion)
+    } else if tex(470, 600) > 2.0 {
         Some(3)
     } else if red > 15.0 {
         Some(20) // two buttons: Consume and End
@@ -1031,7 +1040,11 @@ fn decision(f: &Frame, b: &BoardRead, warden: usize, st: &mut RunState, futures:
     };
     // the buttons as the game shows them: read from the picture, the solver's view only as a fallback
     let buttons: Vec<&str> = match button_count(f) {
-        Some(3) if has_hunt && !has_consume => vec!["hunt", "replace", "end"],
+        // the game's order is Consume, Replace, Hunt, End, without the ones not offered (measured on 1080p
+        // pictures: all four, and Consume, Hunt, End once the day's Replace was used)
+        Some(4) => vec!["consume", "replace", "hunt", "end"],
+        Some(3) if has_hunt && has_consume => vec!["consume", "hunt", "end"],
+        Some(3) if has_hunt => vec!["replace", "hunt", "end"],
         Some(3) => vec!["consume", "replace", "end"],
         Some(20) if has_hunt && !has_consume => vec!["hunt", "end"],
         Some(20) => vec!["consume", "end"],
@@ -1041,11 +1054,11 @@ fn decision(f: &Frame, b: &BoardRead, warden: usize, st: &mut RunState, futures:
             if has_consume {
                 v.push("consume");
             }
-            if has_hunt {
-                v.push("hunt");
-            }
             if s.bites_today == 0 {
                 v.push("replace");
+            }
+            if has_hunt {
+                v.push("hunt");
             }
             v.push("end");
             v
@@ -1081,10 +1094,6 @@ fn decision(f: &Frame, b: &BoardRead, warden: usize, st: &mut RunState, futures:
                 kind(&o.action)
             ));
         }
-    }
-    if has_hunt {
-        a.notes
-            .push("Hunt is offered: the buttons' order with Hunt is a guess".into());
     }
     a
 }
