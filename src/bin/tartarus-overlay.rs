@@ -874,6 +874,18 @@ mod win {
             v
         }
 
+        /// Like `fingerprint`, on the picture as captured (any size): a 96x54 grid.
+        fn raw_print(f: &Frame) -> Vec<u8> {
+            let mut v = Vec::with_capacity(96 * 54);
+            for j in 0..54 {
+                for i in 0..96 {
+                    let (x, y) = ((2 * i + 1) * f.w / 192, (2 * j + 1) * f.h / 108);
+                    v.push(f.gray(x, y).clamp(0.0, 255.0) as u8);
+                }
+            }
+            v
+        }
+
         fn changed_spots(a: &[u8], b: &[u8]) -> usize {
             if a.len() != b.len() {
                 return usize::MAX;
@@ -1188,6 +1200,8 @@ mod win {
         let mut game_checked = Instant::now();
         let mut wait_frame: Option<String> = None;
         let mut warned = false;
+        let mut last_poll = Instant::now();
+        let mut poll_print: Vec<u8> = Vec::new();
         loop {
             let lines = tail.lines();
             if !lines.is_empty() {
@@ -1235,6 +1249,22 @@ mod win {
                     game_seen = Some(Instant::now());
                 } else if game_seen.is_some_and(|t| t.elapsed() > Duration::from_secs(120)) {
                     std::process::exit(0);
+                }
+            }
+            // when the log is quiet (some computers write it late, or it's another install's log), the screen itself is
+            // watched: a big change (a new screen) gets a look, as a log line would
+            if w.due.is_none()
+                && last_growth.elapsed() > Duration::from_secs(3)
+                && last_poll.elapsed() > Duration::from_millis(700)
+            {
+                last_poll = Instant::now();
+                if let Ok(shot) = capture() {
+                    let p = Worker::raw_print(&shot);
+                    let changed = Worker::changed_spots(&p, &poll_print);
+                    poll_print = p;
+                    if changed > 150 {
+                        w.due = Some(Instant::now() + SETTLE);
+                    }
                 }
             }
             if w.due.is_some_and(|t| Instant::now() >= t) {
