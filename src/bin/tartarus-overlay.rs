@@ -307,23 +307,6 @@ mod win {
         let (x, y, w, h) = game_rect(hwnd).ok_or("the game is minimized")?;
         shared().lock().unwrap().game = Some((x, y, w, h));
         unsafe {
-            // the line at the top centre: white text on a dark band
-            if let Some(line) = line {
-                let scale = (gh / 400).max(2) as usize;
-                let (tw, th, mask) = tartarus::font::render(&line, scale);
-                let pad = 4 * scale as i32;
-                let (tx, ty) = (gw / 2 - tw as i32 / 2, 6 * scale as i32);
-                for y in ty - pad..ty + th as i32 + pad {
-                    for x in tx - pad..tx + tw as i32 + pad {
-                        put(x, y, [0, 0, 0, 190]);
-                    }
-                }
-                for (i, &on) in mask.iter().enumerate() {
-                    if on {
-                        put(tx + (i % tw) as i32, ty + (i / tw) as i32, [120, 255, 160, 255]);
-                    }
-                }
-            }
             let screen = GetDC(HWND::default());
             let mem = CreateCompatibleDC(screen);
             let bi = BITMAPINFO {
@@ -1269,6 +1252,23 @@ mod win {
                     for y in y0 - t..=y1 + t {
                         put(x0 - t, y, c);
                         put(x1 + t, y, c);
+                    }
+                }
+            }
+            // the line at the top centre: white text on a dark band
+            if let Some(line) = line {
+                let scale = (gh / 400).max(2) as usize;
+                let (tw, th, mask) = tartarus::font::render(&line, scale);
+                let pad = 4 * scale as i32;
+                let (tx, ty) = (gw / 2 - tw as i32 / 2, 6 * scale as i32);
+                for y in ty - pad..ty + th as i32 + pad {
+                    for x in tx - pad..tx + tw as i32 + pad {
+                        put(x, y, [0, 0, 0, 190]);
+                    }
+                }
+                for (i, &on) in mask.iter().enumerate() {
+                    if on {
+                        put(tx + (i % tw) as i32, ty + (i / tw) as i32, [120, 255, 160, 255]);
                     }
                 }
             }
