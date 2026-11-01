@@ -690,6 +690,9 @@ mod win {
         /// of 10, looks).
         pooled: std::collections::HashMap<String, (f64, f64, f64, f64)>,
         pooled_at: String,
+        /// Whether the game log tells the pop-ups (else they're told from the picture).
+        log_popups: bool,
+        guessed_popup: Popup,
         /// Looks pooled at this position.
         pooled_looks: u32,
         /// Milliseconds per future on this computer, [slow pool, fast pool] (0: not measured yet).
@@ -796,6 +799,9 @@ mod win {
                         save_state(&self.st);
                     }
                     self.popup = p;
+                    if live {
+                        self.log_popups = true;
+                    }
                     self.due = Some(Instant::now() + SETTLE);
                 }
                 Event::PopupClosed(_) if self.viewing => {
@@ -1018,8 +1024,28 @@ mod win {
             }
             self.last_print = print;
             let fast = self.last_event.elapsed() < Duration::from_secs(3) || self.pooled.is_empty();
+            // a game log without the pop-up lines (seen on another computer): the instrument offer and the treasure are
+            // told from the picture, and leaving the offer counts as taking the selected (or boxed) instrument
+            let mut popup = self.popup;
+            if !self.log_popups && popup == Popup::None {
+                let names = tartarus::reader::read_instrument_offer(&f)
+                    .iter()
+                    .filter(|n| n.is_some())
+                    .count();
+                popup = if names >= 2 {
+                    Popup::Instrument
+                } else if tartarus::reader::treasure_header(&f) {
+                    Popup::Treasure
+                } else {
+                    Popup::None
+                };
+                if self.guessed_popup == Popup::Instrument && popup != Popup::Instrument {
+                    self.guessed_popup = popup;
+                    self.handle(Event::InstrumentConfirmed, true);
+                }
+                self.guessed_popup = popup;
+            }
             let st = &mut self.st;
-            let popup = self.popup;
             // as many futures as fit in about a second on this computer (measured on the last looks), so a slower
             // computer or a busy game gets a box as soon, a little rougher, and later looks sharpen it
             let speed = self.ms_per_future[fast as usize];
@@ -1228,6 +1254,8 @@ mod win {
             shown_boxes: Vec::new(),
             pooled: Default::default(),
             pooled_at: String::new(),
+            log_popups: false,
+            guessed_popup: Popup::None,
             pooled_looks: 0,
             ms_per_future: [0.0; 2],
             last_print: Vec::new(),

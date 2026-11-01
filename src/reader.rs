@@ -729,6 +729,23 @@ pub fn read_instrument_offer(f: &Frame) -> Vec<Option<(String, f32)>> {
         .collect()
 }
 
+/// The Warden's Treasure screen's header ("Prisoner rarity reached Chromatic. Warden's Treasure obtained."): light text
+/// both left of and across the middle of the top line, where the instrument offer's shorter header has none on the
+/// left (measured: treasure 0.25 and up on both sides, every other screen under 0.15 on one of them).
+pub fn treasure_header(f: &Frame) -> bool {
+    let share = |x0: usize, x1: usize| {
+        let (mut b, mut n) = (0.0, 0.0);
+        for y in 95..122 {
+            for x in x0..x1 {
+                b += (f.gray(x, y) > 120.0) as u8 as f32;
+                n += 1.0;
+            }
+        }
+        b / n
+    };
+    share(600, 780) > 0.2 && share(820, 1100) > 0.2
+}
+
 /// Which instrument card is selected (its orange frame), if any.
 pub fn selected_instrument_slot(f: &Frame) -> Option<usize> {
     let d = data();
