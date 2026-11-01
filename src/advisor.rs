@@ -833,7 +833,7 @@ fn decision(f: &Frame, b: &BoardRead, warden: usize, st: &mut RunState, futures:
     }
     a.screen = "make your decision".into();
     st.eater_rarity = s.inmate(warden).map(|m| m.rarity);
-    let outs = run_solver(&s, &Phase::Decide, futures);
+    let mut outs = run_solver(&s, &Phase::Decide, futures);
     a.options = options(&s, &outs);
     let acts = solver::actions(&s, &Phase::Decide);
     let has_consume = acts.iter().any(|x| matches!(x, Action::Consume(_)));
@@ -874,6 +874,11 @@ fn decision(f: &Frame, b: &BoardRead, warden: usize, st: &mut RunState, futures:
     }
     if has_consume && !buttons.contains(&"consume") && !buttons.contains(&"hunt") {
         a.notes.push("the game offers no Consume though the board as read has prey: a cell is misread, advice is among what's on screen".into());
+    }
+    // only what the game offers now: after a Replace the Replace button is gone (and the box mustn't stay on it)
+    if button_count(f).is_some() {
+        outs.retain(|o| buttons.contains(&kind(&o.action)));
+        a.options = options(&s, &outs);
     }
     // the best option among the buttons on screen
     if let Some(o) = outs.iter().find(|o| buttons.contains(&kind(&o.action))) {
