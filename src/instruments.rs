@@ -62,7 +62,7 @@ pub enum Instrument {
     GaolersExecutionAxe,
     /// One destination fewer; 50% after a patrol opening to open 1 more random cell.
     ForgedKey,
-    /// Each morning, turns a locked cell into a Rat nest (not in the engine yet).
+    /// Each morning, turns a locked cell into a Rat nest, which hatches a Rare Rat 2 mornings later.
     SquirmingIronBox,
 }
 
@@ -161,7 +161,7 @@ impl Instrument {
 
     /// Whether the engine plays it (the others are ignored, with a note).
     pub fn played(self) -> bool {
-        !matches!(self, SquirmingIronBox)
+        true
     }
 
     /// Finds an instrument by name, full or short ("Ravenous Chains", "ferocious-beasts-ravenous-chains",

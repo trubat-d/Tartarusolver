@@ -169,6 +169,8 @@ pub struct State {
     pub tusks: Vec<usize>,
     /// Scratched locked cells and the Inmate behind each (Filthy Claws; only its rarity shows on screen).
     pub scratches: Vec<(usize, Inmate)>,
+    /// Squirming Iron Box: Rat nests on locked cells and the mornings until each hatches a Rare Rat.
+    pub nests: Vec<(usize, u8)>,
     /// Locked cells whose rarity is already decided (drawn when a card looked behind the doors), and `shown`: those
     /// whose rarity shows (a "?" door: Warden's Scales, Crow Whispers, "Treasure" Hunt). The Code shows only once it
     /// opens.
@@ -271,6 +273,7 @@ impl State {
             hunt: None,
             tusks: Vec::new(),
             scratches: Vec::new(),
+            nests: Vec::new(),
             objective: None,
             offers: 0,
             rerolls: 0,
@@ -670,6 +673,7 @@ impl State {
         };
         self.scratches.retain(|s| s.0 != i);
         self.revealed.retain(|s| s.0 != i);
+        self.nests.retain(|n| n.0 != i);
         self.shown &= !(1 << i);
         self.cells[i] = Cell::Inmate(m);
         if let Some(Objective::BehindCellDoors { opened }) = self.objective {
@@ -778,6 +782,31 @@ impl State {
             if !untusked.is_empty() {
                 let i = rng.pick(&untusked);
                 self.tusks.push(i);
+            }
+        }
+        if self.has(SquirmingIronBox) {
+            // the nests age; one that's done hatches a Rare Rat (community simulator: 2 days later)
+            let mut hatched = Vec::new();
+            for n in self.nests.iter_mut() {
+                n.1 = n.1.saturating_sub(1);
+                if n.1 == 0 {
+                    hatched.push(n.0);
+                }
+            }
+            self.nests.retain(|n| n.1 > 0);
+            for i in hatched {
+                if self.cells[i] == Cell::Locked {
+                    self.settle(i, Inmate { code: Code::Rat, rarity: RARE });
+                }
+            }
+            let fresh: Vec<usize> = self
+                .locked()
+                .into_iter()
+                .filter(|&i| !self.nests.iter().any(|n| n.0 == i) && self.scratch_at(i).is_none())
+                .collect();
+            if !fresh.is_empty() {
+                let i = rng.pick(&fresh);
+                self.nests.push((i, 2));
             }
         }
         if self.has(FilthyClaws) {

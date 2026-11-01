@@ -65,6 +65,20 @@ fn plan_value(s: &State, i: usize) -> f64 {
             .count();
         v += k(41, 2.0) * n as f64;
     }
+    // a sure-Chromatic Replace (Noose or Guillotine with the Maiden): a door on an empty board brings an Inmate alone,
+    // which the Maiden always takes, so it's replaced into a Chromatic the same day
+    if locked && s.has(SeveredIronMaiden) && (s.has(HangmansNoose) || s.has(ScapegoatsGuillotine)) {
+        let n = s.inmates().len();
+        if n == 0 {
+            v += k(45, 0.0);
+        } else {
+            v += k(46, 0.0) * n as f64;
+        }
+    }
+    // Squirming Iron Box: a nest hatches a Rare Rat if left alone
+    if locked && s.nests.iter().any(|n| n.0 == i) {
+        v += k(49, -8.0);
+    }
     // Raging Beast's Agonizing Muzzle: a Consume pays most with 4 or fewer Inmates on the board
     if s.has(AgonizingMuzzle) && locked && s.inmates().len() >= 4 {
         v += k(38, -6.0);
@@ -105,6 +119,8 @@ fn rule_value(s: &State, i: usize) -> f64 {
             {
                 k(30, 12.0) + s.inmates().len().min(5) as f64
             }
+            // a Replace that brings a Chromatic for sure
+            Cell::Inmate(m) if sure_replace(s, i, m) => k(43, 40.0),
             // Severed Iron Maiden: a Replace that comes in 3 tiers up
             Cell::Inmate(m) if s.has(crate::instruments::Instrument::SeveredIronMaiden) && maiden_ready(s, i, m) => {
                 k(31, 20.0) + m.rarity as f64
@@ -156,6 +172,30 @@ fn rule_value(s: &State, i: usize) -> f64 {
 }
 
 pub fn choose_destination(s: &State, options: &[usize], rng: &mut Rng) -> usize {
+    // the learned board value: play each destination's day with the rules, judge the board it leaves
+    let n = k(47, 0.0) as usize;
+    if n > 0 && options.len() > 1 {
+        if let Some(m) = crate::value::model() {
+            let mut best = options[0];
+            let mut best_v = f64::MIN;
+            for &o in options {
+                let mut v = destination_value(s, o) * k(48, 0.0);
+                for _ in 0..n {
+                    let mut c = s.clone();
+                    c.go(o, rng);
+                    resolve_picks(&mut c, rng);
+                    decide(&mut c, rng);
+                    end_day(&mut c);
+                    v += m.eval(&c) / n as f64;
+                }
+                if v > best_v {
+                    best_v = v;
+                    best = o;
+                }
+            }
+            return best;
+        }
+    }
     let n = k(16, 0.0) as usize;
     if n > 0 {
         // look one step ahead: go there and decide, then a rough worth of the board, plus the rule's value
@@ -281,12 +321,12 @@ pub const INSTRUMENT_RANK: &[Instrument] = &[
     Instrument::FelonsDogTag,
     Instrument::ShortChainedShackles,
     Instrument::SearingBrandingIron,
+    Instrument::SquirmingIronBox,
     Instrument::GaolersExecutionAxe,
     Instrument::WardensScales,
     Instrument::BurningStake,
     Instrument::IronPestle,
     Instrument::ForgedKey,
-    Instrument::SquirmingIronBox,
 ];
 
 /// Whether to spend the re-roll on an offer: when its best instrument is outside the top half of the ranking.
@@ -341,8 +381,14 @@ pub fn should_hunt(s: &State) -> bool {
 }
 
 /// A Lion worth marking a prey with: low enough that its mornings of growth aren't wasted past Chromatic.
-fn hunt_worth(_s: &State, m: Inmate) -> bool {
-    m.rarity as f64 <= k(26, ULTIMATE as f64)
+fn hunt_worth(s: &State, m: Inmate) -> bool {
+    // with the Iron Crown a Lion's Consume already gains 3 tiers at once
+    let most = if s.has(Instrument::IronCrown) {
+        k(44, ULTIMATE as f64)
+    } else {
+        k(26, ULTIMATE as f64)
+    };
+    m.rarity as f64 <= most
 }
 
 /// The prey to mark: the highest rarity (both climb, and a high prey reaches Chromatic too).
@@ -354,6 +400,38 @@ pub fn choose_prey(s: &State, targets: &[usize], rng: &mut Rng) -> usize {
         .iter()
         .max_by_key(|&&t| s.inmate(t).map_or(0, |m| m.rarity))
         .unwrap()
+}
+
+/// A Replace here brings a Chromatic for sure: Hangman's Noose (Rare or better) or Scapegoat's Guillotine (above the old
+/// rarity) under the Severed Iron Maiden's 3 tiers.
+fn sure_replace(s: &State, at: usize, m: Inmate) -> bool {
+    use crate::instruments::Instrument::*;
+    if k(42, 1.0) < 0.5 || !s.has(SeveredIronMaiden) || !maiden_ready_any(s, at, m) {
+        return false;
+    }
+    let others = s.inmates().len().saturating_sub(1);
+    let mut least = if s.has(HangmansNoose) { RARE } else { NORMAL };
+    if s.has(ScapegoatsGuillotine) && others >= 2 {
+        least = least.max(m.rarity + 1);
+    }
+    least + 3 >= CHROMATIC
+}
+
+/// As many Inmates above as below this one (any rarity).
+fn maiden_ready_any(s: &State, at: usize, m: Inmate) -> bool {
+    let (mut above, mut below) = (0, 0);
+    for j in s.inmates() {
+        if j == at {
+            continue;
+        }
+        let r = s.inmate(j).unwrap().rarity;
+        if r > m.rarity {
+            above += 1;
+        } else if r < m.rarity {
+            below += 1;
+        }
+    }
+    above == below
 }
 
 /// Severed Iron Maiden: as many Inmates above as below this one, so a Replace comes in 3 tiers up.
@@ -482,6 +560,11 @@ pub fn decide(s: &mut State, rng: &mut Rng) {
                 }
             }
             let marked = s.hunt.is_some_and(|h| h.lion == s.pos || h.prey == s.pos);
+            if !marked && sure_replace(s, s.pos, m) {
+                let pos = s.pos;
+                s.replace(pos, rng);
+                return;
+            }
             // Severed Iron Maiden: a low Inmate ready for 3 tiers is worth more replaced than eating
             if !marked
                 && s.has(Instrument::SeveredIronMaiden)

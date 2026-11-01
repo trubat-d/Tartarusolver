@@ -9,4 +9,5 @@ pub mod policy;
 pub mod reader;
 pub mod rng;
 pub mod solver;
+pub mod value;
 pub mod view;
