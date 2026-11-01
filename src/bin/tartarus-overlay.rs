@@ -74,6 +74,9 @@ mod win {
     const RECHECK: Duration = Duration::from_millis(350);
     /// Futures per option: about a second of work on a usual PC.
     const FUTURES: usize = 2000;
+    /// A look's time budget, and the fewest futures a look plays.
+    const LOOK_MS: f64 = 900.0;
+    const MIN_FUTURES: usize = 300;
     /// Looks pooled at one position before it's no longer solved again.
     const SETTLED_LOOKS: f64 = 6.0;
     const HK_BOXES: i32 = 1;
@@ -687,6 +690,10 @@ mod win {
         /// of 10, looks).
         pooled: std::collections::HashMap<String, (f64, f64, f64, f64)>,
         pooled_at: String,
+        /// Looks pooled at this position.
+        pooled_looks: u32,
+        /// Milliseconds per future on this computer, [slow pool, fast pool] (0: not measured yet).
+        ms_per_future: [f64; 2],
         /// The screen as last solved, coarsely (see `fingerprint`).
         last_print: Vec<u8>,
         /// Where each option that came out best in a look is drawn.
@@ -1003,7 +1010,8 @@ mod win {
             // a screen already solved enough times that hasn't changed since isn't solved again: the computer's
             // fans get a rest while a card screen stays up
             let print = Self::fingerprint(&f);
-            let settled = self.pooled.values().map(|e| e.3).fold(0.0, f64::max) >= SETTLED_LOOKS;
+            let settled = self.pooled.values().map(|e| e.3).fold(0.0, f64::max) >= SETTLED_LOOKS
+                || self.pooled_looks >= 12;
             if settled && Self::changed_spots(&print, &self.last_print) <= 6 {
                 self.due = Some(Instant::now() + RECHECK);
                 return;
@@ -1012,7 +1020,22 @@ mod win {
             let fast = self.last_event.elapsed() < Duration::from_secs(3) || self.pooled.is_empty();
             let st = &mut self.st;
             let popup = self.popup;
-            let mut a = pool(fast).install(|| advise(&f, popup, st, FUTURES));
+            // as many futures as fit in about a second on this computer (measured on the last looks), so a slower
+            // computer or a busy game gets a box as soon, a little rougher, and later looks sharpen it
+            let speed = self.ms_per_future[fast as usize];
+            let futures = if speed > 0.0 {
+                ((LOOK_MS / speed) as usize).clamp(MIN_FUTURES, FUTURES)
+            } else {
+                FUTURES / 2
+            };
+            let solved = Instant::now();
+            let mut a = pool(fast).install(|| advise(&f, popup, st, futures));
+            if !a.options.is_empty() {
+                let per = solved.elapsed().as_secs_f64() * 1000.0 / futures as f64;
+                let m = &mut self.ms_per_future[fast as usize];
+                *m = if *m > 0.0 { 0.5 * *m + 0.5 * per } else { per };
+            }
+            let weight = futures as f64 / FUTURES as f64;
             save_state(&self.st);
             // the same screen: same kind and the warden in the same cell (a cell misread between two looks doesn't
             // make it a new screen)
@@ -1031,20 +1054,23 @@ mod win {
             if position != self.pooled_at {
                 self.pooled_at = position;
                 self.pooled.clear();
+                self.pooled_looks = 0;
             }
+            self.pooled_looks += 1;
+            // each look weighs by its futures (a full look = 1)
             for o in &a.options {
                 let e = self.pooled.entry(o.0.clone()).or_default();
-                e.0 += o.1;
-                e.1 += o.2 * o.2;
-                e.2 += o.3;
-                e.3 += 1.0;
+                e.0 += o.1 * weight;
+                e.1 += (o.2 * weight) * (o.2 * weight);
+                e.2 += o.3 * weight;
+                e.3 += weight;
             }
             if let Some(b) = a.options.first() {
                 self.boxes_of.insert(b.0.clone(), to_screen(&a.boxes));
             }
             for o in a.options.iter_mut() {
                 if let Some(&(sum, var, full, n)) = self.pooled.get(&o.0) {
-                    if n > 1.0 {
+                    if n > 0.0 {
                         *o = (o.0.clone(), sum / n, var.sqrt() / n, full / n);
                     }
                 }
@@ -1202,6 +1228,8 @@ mod win {
             shown_boxes: Vec::new(),
             pooled: Default::default(),
             pooled_at: String::new(),
+            pooled_looks: 0,
+            ms_per_future: [0.0; 2],
             last_print: Vec::new(),
             boxes_of: Default::default(),
         };
