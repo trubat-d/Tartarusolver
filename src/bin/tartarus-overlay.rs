@@ -73,7 +73,7 @@ mod win {
     /// Looks again this soon after a picture, until two in a row agree.
     const RECHECK: Duration = Duration::from_millis(350);
     /// Futures per option: about a second of work on a usual PC.
-    const FUTURES: usize = 1500;
+    const FUTURES: usize = 3000;
     const HK_BOXES: i32 = 1;
     const HK_REDO: i32 = 2;
     const HK_QUIT: i32 = 3;
@@ -561,6 +561,12 @@ mod win {
         shown_best: Option<String>,
         /// Where the boxes of the kept option are (put back after a click cleared them).
         shown_boxes: Vec<tartarus::advisor::Rect>,
+        /// The looks at one position pooled: option -> (sum of estimates, sum of squared margins, sum of chances
+        /// of 10, looks).
+        pooled: std::collections::HashMap<String, (f64, f64, f64, f64)>,
+        pooled_at: String,
+        /// Where each option that came out best in a look is drawn.
+        boxes_of: std::collections::HashMap<String, Vec<tartarus::advisor::Rect>>,
     }
 
     impl Worker {
@@ -837,49 +843,70 @@ mod win {
                     .collect()
             };
             let t = Instant::now();
-            // a quick look first (a fifth of the futures) so the box shows at once, then the full one, which moves
-            // the box only if it disagrees
-            let quick = advise(&f, self.popup, &mut self.st, FUTURES / 5);
-            // the quick look only on a screen not boxed yet (on the same screen it would make the box hop between
-            // near-equal options)
+            // one full look (no quick first guess: a box that appears a little later but doesn't hop)
+            let mut a = advise(&f, self.popup, &mut self.st, FUTURES);
+            save_state(&self.st);
             // the same screen: same kind and the warden in the same cell (a cell misread between two looks doesn't
             // make it a new screen)
             let screen = format!(
                 "{}|{}",
-                quick.screen,
-                quick
-                    .board
+                a.screen,
+                a.board
                     .as_deref()
                     .and_then(|b| b.split(" |").next())
                     .unwrap_or("")
             );
             let same_screen = screen == self.shown_screen;
-            if !same_screen {
-                set_boxes(to_screen(&quick.boxes));
+            // every look at the very same position adds its futures to the earlier ones', so the estimates get
+            // sharper the longer a screen stays up instead of jumping with each look's luck
+            let position = format!("{}|{:?}", a.screen, a.board);
+            if position != self.pooled_at {
+                self.pooled_at = position;
+                self.pooled.clear();
             }
-            let mut a = advise(&f, self.popup, &mut self.st, FUTURES);
-            // what the game did was seen by the quick look
-            let mut seen = quick.observations;
-            seen.append(&mut a.observations);
-            a.observations = seen;
-            save_state(&self.st);
-            // keep the box where it is while that option stays within the margin of the best (a toss-up isn't worth
-            // a hop); move it when another option is clearly better or the screen changed
+            for o in &a.options {
+                let e = self.pooled.entry(o.0.clone()).or_default();
+                e.0 += o.1;
+                e.1 += o.2 * o.2;
+                e.2 += o.3;
+                e.3 += 1.0;
+            }
+            if let Some(b) = a.options.first() {
+                self.boxes_of.insert(b.0.clone(), to_screen(&a.boxes));
+            }
+            for o in a.options.iter_mut() {
+                if let Some(&(sum, var, full, n)) = self.pooled.get(&o.0) {
+                    if n > 1.0 {
+                        *o = (o.0.clone(), sum / n, var.sqrt() / n, full / n);
+                    }
+                }
+            }
+            a.options
+                .sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
+            // the box moves only when another option is clearly better than the boxed one: by twice their
+            // margins together (and at least 0.05 Chromatics); a toss-up keeps the box where it is
             let best = a.options.first().cloned();
             let kept = same_screen
                 && self.shown_best.as_ref().is_some_and(|prev| {
-                    let top = best.as_ref().map_or(0.0, |b| b.1);
-                    a.options.iter().any(|o| {
-                        &o.0 == prev
-                            && top - o.1 <= o.2.max(best.as_ref().map_or(0.0, |b| b.2)).max(0.03)
-                    })
+                    let Some(b) = best.as_ref() else { return false };
+                    a.options
+                        .iter()
+                        .any(|o| &o.0 == prev && b.1 - o.1 <= (2.0 * (o.2 + b.2)).max(0.05))
                 });
             if !kept {
-                set_boxes(to_screen(&a.boxes));
-                self.shown_boxes = to_screen(&a.boxes);
+                let boxes = best
+                    .as_ref()
+                    .and_then(|b| self.boxes_of.get(&b.0).cloned())
+                    .unwrap_or_else(|| to_screen(&a.boxes));
+                set_boxes(boxes.clone());
+                self.shown_boxes = boxes;
                 self.shown_best = best.as_ref().map(|b| b.0.clone());
             } else if !self.shown_boxes.is_empty() {
                 set_boxes(self.shown_boxes.clone());
+            }
+            if !same_screen {
+                self.boxes_of
+                    .retain(|k, _| a.options.iter().any(|o| &o.0 == k));
             }
             if kept {
                 if let Some(k) = a
@@ -993,6 +1020,9 @@ mod win {
             shown_screen: String::new(),
             shown_best: None,
             shown_boxes: Vec::new(),
+            pooled: Default::default(),
+            pooled_at: String::new(),
+            boxes_of: Default::default(),
         };
         // catch up on the end of the log: the day, an open pop-up, a new run since the last time
         let mut tail = match Tail::open(&log, 16 << 20) {
