@@ -79,6 +79,85 @@ mod win {
     const HK_BOXES: i32 = 1;
     const HK_REDO: i32 = 2;
     const HK_QUIT: i32 = 3;
+    /// The tray icon's messages to the window.
+    const WM_TRAY: u32 = WM_APP + 1;
+    const MENU_BOXES: usize = 1;
+    const MENU_QUIT: usize = 2;
+    static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+    /// The icon in the taskbar's corner (notification area): right- or left-click for Boxes on/off and Quit.
+    unsafe fn add_tray(hwnd: HWND, instance: HINSTANCE) {
+        use windows::Win32::UI::Shell::*;
+        let icon = LoadIconW(instance, PCWSTR(1 as *const u16))
+            .or_else(|_| LoadIconW(HINSTANCE::default(), IDI_APPLICATION))
+            .unwrap_or_default();
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: 1,
+            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+            uCallbackMessage: WM_TRAY,
+            hIcon: icon,
+            ..Default::default()
+        };
+        for (k, c) in "Tartarus overlay (click: boxes on/off, quit)"
+            .encode_utf16()
+            .take(nid.szTip.len() - 1)
+            .enumerate()
+        {
+            nid.szTip[k] = c;
+        }
+        if Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
+            TRAY_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Quits, taking the tray icon away first (else it stays until the mouse passes over it).
+    fn quit() -> ! {
+        let h = TRAY_HWND.load(std::sync::atomic::Ordering::SeqCst);
+        if h != 0 {
+            unsafe {
+                use windows::Win32::UI::Shell::*;
+                let nid = NOTIFYICONDATAW {
+                    cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                    hWnd: HWND(h as *mut core::ffi::c_void),
+                    uID: 1,
+                    ..Default::default()
+                };
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+            }
+        }
+        std::process::exit(0)
+    }
+
+    unsafe fn tray_menu(hwnd: HWND) {
+        let Ok(m) = CreatePopupMenu() else { return };
+        let _ = AppendMenuW(m, MF_STRING, MENU_BOXES, w!("Boxes on/off"));
+        let _ = AppendMenuW(m, MF_STRING, MENU_QUIT, w!("Quit Tartarus overlay"));
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // the menu closes when clicking elsewhere only if the window is in front
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(
+            m,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+            pt.x,
+            pt.y,
+            0,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(m);
+        match cmd.0 as usize {
+            MENU_QUIT => quit(),
+            MENU_BOXES => {
+                let _ = TO_WORKER
+                    .get()
+                    .map(|t| t.send(Msg::Command("boxes".into())));
+            }
+            _ => {}
+        }
+    }
 
     enum Msg {
         Command(String),
@@ -1248,7 +1327,7 @@ mod win {
                 if find_game().is_some() {
                     game_seen = Some(Instant::now());
                 } else if game_seen.is_some_and(|t| t.elapsed() > Duration::from_secs(120)) {
-                    std::process::exit(0);
+                    quit();
                 }
             }
             // when the log is quiet (some computers write it late, or it's another install's log), the screen itself is
@@ -1424,8 +1503,15 @@ mod win {
                     HK_REDO => {
                         let _ = TO_WORKER.get().map(|t| t.send(Msg::Redo));
                     }
-                    HK_QUIT => std::process::exit(0),
+                    HK_QUIT => quit(),
                     _ => {}
+                }
+                LRESULT(0)
+            }
+            WM_TRAY => {
+                let ev = (lp.0 as u32) & 0xFFFF;
+                if ev == WM_RBUTTONUP || ev == WM_LBUTTONUP {
+                    tray_menu(hwnd);
                 }
                 LRESULT(0)
             }
@@ -1553,6 +1639,7 @@ mod win {
                 None,
             )
             .map_err(|e| e.to_string())?;
+            add_tray(hwnd, instance);
             for (id, vk) in [(HK_BOXES, 'B'), (HK_REDO, 'R'), (HK_QUIT, 'Q')] {
                 if RegisterHotKey(
                     hwnd,
