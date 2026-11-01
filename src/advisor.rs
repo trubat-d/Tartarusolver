@@ -318,7 +318,7 @@ impl RunState {
         let mut g = Vec::new();
         if self.rumor.is_none() {
             g.push(
-                "Rumor: none set (type `rumor opulence` or `rumor cage-fight` if this run has one)"
+                "Rumor: none set (type `rumor opulence`, `rumor cage-fight`, `rumor tyranny` or `rumor iron-law` if this run has one)"
                     .into(),
             );
         } else if let Some(r) = &self.rumor {
@@ -671,7 +671,7 @@ fn advise_screen(f: &Frame, popup: Popup, st: &mut RunState, futures: usize) -> 
                         a.notes.push(format!("this card reads as {r} but the run's Rumor is {}: type `rumor {r}` if that's wrong", st.rumor.as_deref().unwrap_or("none")));
                     }
                 }
-                None => a.notes.push("a Rumor I can't read yet: if it's Opulence or Cage Fight, type `rumor opulence` / `rumor cage-fight`".into()),
+                None => a.notes.push("a Rumor I can't read yet: type `rumor opulence`, `rumor cage-fight`, `rumor tyranny` or `rumor iron-law` (tell me its name too)".into()),
             }
             return a;
         }

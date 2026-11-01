@@ -632,9 +632,11 @@ mod win {
                 Event::Day(cur, max) => {
                     // a new run: the day went back or the length changed (day 0 right after the Rumor/objective cards,
                     // which already started it, isn't one: what was typed on those cards stays)
+                    // (a length that changes isn't a new run: the Iron Law Rumor makes it 30 days, and the Rumor and
+                    // objective already read stay)
                     let new_run = match self.st.day {
                         None => cur == 0,
-                        Some((c, m)) => cur < c || m != max,
+                        Some((c, _)) => cur < c,
                     };
                     if new_run {
                         self.st.new_run(max);
@@ -642,7 +644,7 @@ mod win {
                             say!("");
                             say!("{}  ===== a new run ({max} days) =====", clock());
                             say!(
-                                "  If it has a Rumor, type `rumor opulence` or `rumor cage-fight`."
+                                "  If it has a Rumor, type `rumor opulence`, `rumor cage-fight`, `rumor tyranny` or `rumor iron-law`."
                             );
                             say!("  Set the objective: `objective prison-walk 0`, `objective king`, `objective undercurrents` or `objective <name>`.");
                             say!("  The Torture Instruments you take are noted by themselves (`add <name>` if one is missed).");
@@ -662,7 +664,7 @@ mod win {
                                 self.st.new_run(m);
                                 say!("");
                                 say!("{}  ===== a new run ({m} days) =====", clock());
-                                say!("  If it has a Rumor, type `rumor opulence` or `rumor cage-fight`.");
+                                say!("  If it has a Rumor, type `rumor opulence`, `rumor cage-fight`, `rumor tyranny` or `rumor iron-law`.");
                                 say!("  Set the objective if it isn't read: `objective prison-walk 0`, `objective king`, `objective undercurrents`.");
                                 save_state(&self.st);
                             }
@@ -1375,6 +1377,22 @@ mod win {
                 windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             );
         }
+        // the solver gets a quarter of the computer's threads (env TARTARUS_THREADS to change), each at below-normal
+        // priority, so the game and everything else stay smooth while it calculates
+        let threads = std::env::var("TARTARUS_THREADS")
+            .ok()
+            .and_then(|t| t.parse::<usize>().ok())
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map_or(4, |n| n.get()) / 4
+            })
+            .max(2);
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .start_handler(|_| unsafe {
+                use windows::Win32::System::Threading::*;
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            })
+            .build_global();
         quick_edit_off();
         let home = std::env::var("USERPROFILE").map_err(|_| "no USERPROFILE")?;
         let (y, mo, d, h, mi, s) = now_parts();
@@ -1428,7 +1446,7 @@ mod win {
             tartarus::reader::known_titles().join(", ")
         );
         say!("       others show as \"can't read\": tell me their names and send the picture from the frames folder");
-        say!("  [ok] solver: 30 of 31 instruments, Opulence, Cage Fight, Prison Walk, King of the Caged");
+        say!("  [ok] solver: 30 of 31 instruments, Opulence, Cage Fight, Tyranny, Iron Law, Prison Walk, King of the Caged");
         say!("  [..] not played yet: Squirming Iron Box, other Rumors/objectives");
         say!("  [..] screens with guessed box places: Instigate/Bestow, two destination cards (Forged Key etc.)");
         say!("  frames and this console: {}", frames.display());

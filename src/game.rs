@@ -289,7 +289,9 @@ impl State {
     pub fn fresh(setup: Setup, rng: &mut Rng) -> State {
         let mut cells = [Cell::Locked; CELLS];
         cells[OFFICE] = Cell::Office;
-        let mut s = State::new(cells, OFFICE, 20, setup);
+        // a run lasts 20 days (30 with the Iron Law Rumor; env DAYS for benchmarks)
+        let days = std::env::var("DAYS").ok().and_then(|d| d.parse().ok()).unwrap_or(20);
+        let mut s = State::new(cells, OFFICE, days, setup);
         let mut free: Vec<usize> = (1..CELLS).collect();
         rng.shuffle(&mut free);
         let n = if rng.chance(0.05) { 3 } else { 4 };

@@ -30,7 +30,10 @@ pub fn features(s: &State) -> Vec<f32> {
         }
     }
     f.extend_from_slice(&eaters);
-    let days = s.days_left as f32;
+    // trained on 20-day runs: the extra days of an Iron Law run would be outside what it learned
+    static RAW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let raw = *RAW.get_or_init(|| std::env::var("VDAYS_RAW").is_ok());
+    let days = if raw { s.days_left as f32 } else { (s.days_left as f32).min(20.0) };
     let chroma = s.chromatics as f32;
     let locked = s.locked().len() as f32;
     let n = s.inmates().len() as f32;
