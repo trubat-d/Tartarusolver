@@ -253,7 +253,7 @@ mod win {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 500,
-                340,
+                400,
                 HWND::default(),
                 HMENU::default(),
                 instance,
@@ -262,13 +262,14 @@ mod win {
                 return;
             };
             SETTINGS_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
+            dark_title(hwnd);
             let st = settings().lock().unwrap().clone();
             let (label, edit, button) = (w!("STATIC"), w!("EDIT"), w!("BUTTON"));
             let (es, tab) = (0x80 | 0x0001_0000, 0x0001_0000); // ES_AUTOHSCROLL | WS_TABSTOP, WS_TABSTOP
-            add_control(hwnd, label, "Game log (leave empty: found through Steam)", 0, false, 16, 14, 440, 18, 0);
-            add_control(hwnd, edit, st.log.as_deref().unwrap_or(""), es, true, 16, 34, 300, 24, ID_LOG);
-            add_control(hwnd, button, "Browse...", tab, false, 322, 34, 76, 24, ID_BROWSE);
-            add_control(hwnd, button, "Auto", tab, false, 404, 34, 60, 24, ID_AUTO);
+            add_control(hwnd, label, "Game log (leave empty: found through Steam)", 0, false, 16, 66, 440, 18, 0);
+            add_control(hwnd, edit, st.log.as_deref().unwrap_or(""), es, true, 16, 86, 300, 24, ID_LOG);
+            add_control(hwnd, button, "Browse...", tab, false, 322, 86, 76, 24, ID_BROWSE);
+            add_control(hwnd, button, "Auto", tab, false, 404, 86, 60, 24, ID_AUTO);
             for (k, (name, value, id)) in [
                 ("Boxes on/off", &st.boxes_key, ID_BOXES),
                 ("Read the screen again", &st.redo_key, ID_REDO),
@@ -277,19 +278,30 @@ mod win {
             .into_iter()
             .enumerate()
             {
-                let y = 76 + 32 * k as i32;
+                let y = 128 + 32 * k as i32;
                 add_control(hwnd, label, name, 0, false, 16, y + 4, 150, 18, 0);
                 add_control(hwnd, edit, value, es, true, 170, y, 150, 24, id);
             }
-            add_control(hwnd, label, "Box color (#RRGGBB)", 0, false, 16, 176, 150, 18, 0);
-            add_control(hwnd, edit, &tartarus::settings::format_color(st.color), es, true, 170, 172, 100, 24, ID_COLOR);
-            add_control(hwnd, button, "Pick...", tab, false, 276, 172, 70, 24, ID_PICK);
-            add_control(hwnd, label, "Hotkeys: Ctrl, Alt, Shift or Win + a letter, a digit or F1-F24 (e.g. Ctrl+Alt+B, F8)", 0, false, 16, 212, 460, 18, 0);
-            add_control(hwnd, button, "Save", tab, false, 290, 252, 84, 28, ID_SAVE);
-            add_control(hwnd, button, "Cancel", tab, false, 382, 252, 84, 28, ID_CANCEL);
+            add_control(hwnd, label, "Box color (#RRGGBB)", 0, false, 16, 228, 150, 18, 0);
+            add_control(hwnd, edit, &tartarus::settings::format_color(st.color), es, true, 170, 224, 100, 24, ID_COLOR);
+            add_control(hwnd, button, "Pick...", tab, false, 276, 224, 70, 24, ID_PICK);
+            add_control(hwnd, label, "Hotkeys: Ctrl, Alt, Shift or Win + a letter, a digit or F1-F24 (e.g. Ctrl+Alt+B, F8)", 0, false, 16, 264, 460, 18, 0);
+            add_control(hwnd, button, "Save", tab, false, 290, 304, 84, 28, ID_SAVE);
+            add_control(hwnd, button, "Cancel", tab, false, 382, 304, 84, 28, ID_CANCEL);
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
         }
+    }
+
+    /// The dark window's brushes, made once: 0 the background, 1 the entry fields.
+    unsafe fn dark_brush(k: usize) -> HBRUSH {
+        static B: [std::sync::atomic::AtomicIsize; 2] =
+            [std::sync::atomic::AtomicIsize::new(0), std::sync::atomic::AtomicIsize::new(0)];
+        let colors = [0x0020_1A18u32, 0x0034_2E2Bu32];
+        if B[k].load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            B[k].store(CreateSolidBrush(COLORREF(colors[k])).0 as isize, std::sync::atomic::Ordering::Relaxed);
+        }
+        HBRUSH(B[k].load(std::sync::atomic::Ordering::Relaxed) as *mut core::ffi::c_void)
     }
 
     unsafe fn browse_log(owner: HWND) -> Option<String> {
@@ -392,6 +404,40 @@ mod win {
                 }
                 LRESULT(0)
             }
+            WM_PAINT => {
+                // the notice's look: dark, a green bar along the top, a title
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                FillRect(hdc, &rc, dark_brush(0));
+                let accent = CreateSolidBrush(COLORREF(0x005A_FF28));
+                FillRect(hdc, &RECT { left: 0, top: 0, right: rc.right, bottom: 5 }, accent);
+                let _ = DeleteObject(accent);
+                let mut lf = LOGFONTW { lfHeight: -24, lfWeight: 600, ..Default::default() };
+                for (k, c) in "Segoe UI".encode_utf16().enumerate() {
+                    lf.lfFaceName[k] = c;
+                }
+                let f = CreateFontIndirectW(&lf);
+                let old = SelectObject(hdc, f);
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, COLORREF(0x00F0_F0F0));
+                let mut t: Vec<u16> = "Settings".encode_utf16().collect();
+                let mut r = RECT { left: 16, top: 14, right: rc.right - 16, bottom: 50 };
+                DrawTextW(hdc, &mut t, &mut r, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE);
+                SelectObject(hdc, old);
+                let _ = DeleteObject(f);
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
+                // labels on the dark background, entry fields a shade lighter, light text
+                let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                let field = msg == WM_CTLCOLOREDIT;
+                SetTextColor(hdc, COLORREF(if field { 0x00F0_F0F0 } else { 0x00DC_DCDC }));
+                SetBkColor(hdc, COLORREF(if field { 0x0034_2E2B } else { 0x0020_1A18 }));
+                LRESULT(dark_brush(field as usize).0 as isize)
+            }
             WM_DESTROY => {
                 SETTINGS_HWND.store(0, std::sync::atomic::Ordering::SeqCst);
                 CONTROLS.with(|c| c.borrow_mut().clear());
@@ -406,6 +452,21 @@ mod win {
     const ID_AGREE: i32 = 201;
     const ID_LEAVE: i32 = 202;
     const ID_HIDE: i32 = 203;
+    const ID_START: i32 = 204;
+    /// The notice's page: 0 the notice, 1 how to use it (after I accept).
+    static NOTICE_PAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+    fn ready_text() -> Vec<(bool, String)> {
+        let st = settings().lock().unwrap().clone();
+        vec![
+            (true, "While you play".into()),
+            (false, "A box marks the best choice: where to go, Consume / Replace / Hunt / End, which Inmate to eat, which instrument or treasure to take. In the bottom-left corner you see what that choice is expected to bring (Chromatics, and your chance of reaching 10), with a bar showing the time until the next box.".into()),
+            (true, "Shortcuts".into()),
+            (false, format!("{}   boxes on / off\n{}   read the screen again\n{}   quit", st.boxes_key, st.redo_key, st.quit_key)),
+            (true, "The icon next to the clock".into()),
+            (false, "Click it for Boxes on/off, Settings... (game log, shortcuts, box color) and Quit. It may be hidden under the ^ arrow. The overlay also quits on its own a couple of minutes after the game closes.".into()),
+        ]
+    }
     /// 0 while the notice is up, 1 understood, 2 quit.
     static NOTICE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
@@ -464,9 +525,15 @@ mod win {
                     SelectObject(hdc, old);
                     *y += h + gap;
                 };
-                draw(title, 0x00F0_F0F0, "Tartarus overlay", &mut y, 2);
-                draw(body, 0x00A0_A0A0, &format!("Version {VERSION} - advice for the Tartarus Prison minigame"), &mut y, 14);
-                for (is_head, text) in notice_text() {
+                let ready = NOTICE_PAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+                if ready {
+                    draw(title, 0x00F0_F0F0, "You're all set", &mut y, 2);
+                    draw(body, 0x00A0_A0A0, "Start Tartarus Prison: the boxes appear on their own.", &mut y, 14);
+                } else {
+                    draw(title, 0x00F0_F0F0, "Tartarus overlay", &mut y, 2);
+                    draw(body, 0x00A0_A0A0, &format!("Version {VERSION} - advice for the Tartarus Prison minigame"), &mut y, 14);
+                }
+                for (is_head, text) in if ready { ready_text() } else { notice_text() } {
                     if is_head {
                         draw(head, 0x005A_FF28, &text, &mut y, 2);
                     } else {
@@ -499,6 +566,17 @@ mod win {
                             st.hide_notice = true;
                             save_settings(&st);
                         }
+                        // the same window turns to how to use it
+                        for id in [ID_AGREE, ID_LEAVE, ID_HIDE] {
+                            let _ = DestroyWindow(ctrl(id));
+                        }
+                        NOTICE_PAGE.store(1, std::sync::atomic::Ordering::SeqCst);
+                        let mut rc = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut rc);
+                        add_control(hwnd, w!("BUTTON"), "Start", 0x0001_0001, false, rc.right - 150, rc.bottom - 62, 120, 36, ID_START);
+                        let _ = InvalidateRect(hwnd, None, true);
+                    }
+                    ID_START => {
                         NOTICE.store(1, std::sync::atomic::Ordering::SeqCst);
                         let _ = DestroyWindow(hwnd);
                     }
@@ -511,7 +589,9 @@ mod win {
                 LRESULT(0)
             }
             WM_CLOSE => {
-                NOTICE.store(2, std::sync::atomic::Ordering::SeqCst);
+                // closing the notice quits; closing the how-to page (already accepted) starts
+                let accepted = NOTICE_PAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+                NOTICE.store(if accepted { 1 } else { 2 }, std::sync::atomic::Ordering::SeqCst);
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
@@ -2259,11 +2339,6 @@ mod win {
             data_dir().join("state.json").display()
         );
         say!("  hotkeys: Ctrl+Alt+B boxes on/off, Ctrl+Alt+R read again, Ctrl+Alt+Q quit");
-        if LITE {
-            std::thread::spawn(|| {
-                message("Tartarus overlay is running: it draws a green box around the best choice in Tartarus Prison.\n\nCtrl+Alt+B: boxes on/off\nCtrl+Alt+R: read the screen again\nCtrl+Alt+Q: quit")
-            });
-        }
 
         let (tx, rx) = channel();
         let _ = TO_WORKER.set(tx.clone());
