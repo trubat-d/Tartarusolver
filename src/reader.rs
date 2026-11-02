@@ -130,6 +130,8 @@ struct Data {
     rumors: Vec<(String, Vec<f32>)>,
     /// "N day(s) until Riot" at the top of the board, by N.
     days_left: Vec<(u32, Vec<f32>)>,
+    /// The objective panel's first line ("Objective: Prison Walk"), by objective.
+    objective_panel: Vec<(String, Vec<f32>)>,
     incident_cards: Vec<(String, Vec<f32>)>,
 }
 
@@ -209,6 +211,10 @@ fn data() -> &'static Data {
                 [680, 318, 1240, 372]
             },
             // a name may come back as "name#2": another picture of the same card (it fades in)
+            objective_panel: r["objective_panel"]
+                .as_object()
+                .map(|o| o.iter().map(|(k, v)| (k.clone(), vecf(v))).collect())
+                .unwrap_or_default(),
             days_left: r["days_left"]
                 .as_object()
                 .map(|o| {
@@ -920,6 +926,25 @@ pub fn label_vector(f: &Frame) -> Vec<f32> {
 pub fn objective_vector(f: &Frame) -> Vec<f32> {
     let [x0, y0, x1, y1] = data().objective_region;
     block_vector(f, x0, y0, x1 - x0, y1 - y0, 4, 2)
+}
+
+/// The objective panel's first line, left of the board ("Objective: Behind Cell"), as a vector.
+pub fn objective_panel_vector(f: &Frame) -> Vec<f32> {
+    block_vector(f, 80, 122, 320, 32, 2, 2)
+}
+
+/// The run's objective from the panel left of the board ("prison-walk", ...): for when its card at the run's start
+/// wasn't seen (the overlay started late, or the notice was still up).
+pub fn read_objective_panel(f: &Frame) -> Option<String> {
+    let v = objective_panel_vector(f);
+    let mut best = (0.0f32, None);
+    for (n, t) in &data().objective_panel {
+        let s = dot(&v, t);
+        if s > best.0 {
+            best = (s, Some(n.clone()));
+        }
+    }
+    best.1.filter(|_| best.0 > 0.9)
 }
 
 /// The top line "N day(s) until Riot" as a vector (its number and the words, which shift with the number's width).

@@ -461,7 +461,17 @@ pub fn advise(f: &Frame, popup: Popup, st: &mut RunState, futures: usize) -> Adv
     if let Some(n) = reader::read_days_left(f) {
         st.days_read = Some(n);
     }
+    // the objective card at the run's start missed (the overlay started late, or its notice was up): the panel left
+    // of the board names it (its progress so far isn't read: counted from 0)
+    let mut panel_note = None;
+    if st.objective.is_none() {
+        if let Some(o) = reader::read_objective_panel(f) {
+            panel_note = Some(format!("objective read from its panel: {o}"));
+            st.objective = Some(o);
+        }
+    }
     let mut a = advise_screen(f, popup, st, futures);
+    a.notes.extend(panel_note);
     a.unit = if st.board.as_ref().is_some_and(|b| b.chromatics >= MAX_CHROMATICS) {
         "Ultimates"
     } else {
