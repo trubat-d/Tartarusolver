@@ -74,8 +74,8 @@ mod win {
     const RECHECK: Duration = Duration::from_millis(350);
     /// Futures per option: about a second of work on a usual PC.
     const FUTURES: usize = 2000;
-    /// A look's time budget, and the fewest futures a look plays.
-    const LOOK_MS: f64 = 900.0;
+    /// A look's time budget (about half a second), and the fewest futures a look plays.
+    const LOOK_MS: f64 = 450.0;
     const MIN_FUTURES: usize = 300;
     /// Looks pooled at one position before it's no longer solved again.
     const SETTLED_LOOKS: f64 = 6.0;
@@ -1070,7 +1070,7 @@ mod win {
                 self.guessed_popup = popup;
             }
             let st = &mut self.st;
-            // as many futures as fit in about a second on this computer (measured on the last looks), so a slower
+            // as many futures as fit in about half a second on this computer (measured on the last looks), so a slower
             // computer or a busy game gets a box as soon, a little rougher, and later looks sharpen it
             let speed = self.ms_per_future[fast as usize];
             let futures = if speed > 0.0 {
