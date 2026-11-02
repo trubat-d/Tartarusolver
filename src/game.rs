@@ -593,6 +593,21 @@ impl State {
         t
     }
 
+    /// Whether the Inmate in cell `i` has anything to eat (as `targets`, without listing them).
+    pub fn has_target(&self, i: usize) -> bool {
+        let Some(e) = self.inmate(i) else { return false };
+        if e.rarity >= CHROMATIC || (e.rarity == ULTIMATE && self.chromatics >= MAX_CHROMATICS) {
+            return false;
+        }
+        (0..CELLS).any(|j| j != i && matches!(self.cells[j], Cell::Inmate(p) if self.can_eat(e.code, e.rarity, p)))
+            || (e.code == Code::Wolf
+                && self.has(FilthyClaws)
+                && self
+                    .scratches
+                    .iter()
+                    .any(|s| s.1.rarity == e.rarity && self.cells[s.0] == Cell::Locked))
+    }
+
     /// The cells the Inmate in cell `i` can Consume now (the red jaws when not empty).
     pub fn targets(&self, i: usize) -> Vec<usize> {
         match self.inmate(i) {
@@ -1137,7 +1152,7 @@ impl State {
                 let mut without: Vec<usize> = self
                     .inmates()
                     .into_iter()
-                    .filter(|&i| self.targets(i).is_empty())
+                    .filter(|&i| !self.has_target(i))
                     .collect();
                 rng.shuffle(&mut without);
                 for i in without.into_iter().take(4) {

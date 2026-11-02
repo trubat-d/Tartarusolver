@@ -415,8 +415,17 @@ fn board_line(cells: &[Cell; CELLS], warden: usize, chromatics: u8) -> String {
     )
 }
 
+/// Which look at the same screen this is: each look plays new futures (another seed), so pooling looks sharpens
+/// the estimates instead of repeating the same futures.
+static LOOK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_look(n: u64) {
+    LOOK.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn run_solver(s: &State, phase: &Phase, futures: usize) -> Vec<solver::Outcome> {
-    solver::evaluate_adaptive(s, phase, futures, 7)
+    let look = LOOK.load(std::sync::atomic::Ordering::Relaxed);
+    solver::evaluate_race(s, phase, futures, 7u64.wrapping_add(look.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
 }
 
 /// The options as the console shows them: expected Chromatics, or, once the 10 are in, expected Ultimates (the red

@@ -43,7 +43,7 @@ fn hand_value(s: &State) -> f64 {
     let eaters = s
         .inmates()
         .into_iter()
-        .filter(|&i| !s.targets(i).is_empty())
+        .filter(|&i| s.has_target(i))
         .count() as f64;
     let locked = s.locked().len() as f64;
     let open = (CELLS as f64 - 1.0 - locked).max(0.0);
@@ -119,7 +119,7 @@ fn rule_value(s: &State, i: usize) -> f64 {
                     && s.hunt.is_none()
                     && m.code == crate::game::Code::Lion
                     && hunt_worth(s, m)
-                    && !s.targets(i).is_empty() =>
+                    && s.has_target(i) =>
             {
                 k(27, 30.0) + k(2, 1.5) * m.rarity as f64
             }
@@ -138,7 +138,7 @@ fn rule_value(s: &State, i: usize) -> f64 {
             Cell::Inmate(m) if s.has(crate::instruments::Instrument::SeveredIronMaiden) && maiden_ready(s, i, m) => {
                 k(31, 20.0) + m.rarity as f64
             }
-            Cell::Inmate(m) if !s.targets(i).is_empty() => {
+            Cell::Inmate(m) if s.has_target(i) => {
                 k(1, 3.5)
                     + k(2, 1.5) * m.rarity as f64
                     + if matches!(s.objective, Some(Objective::SurvivalOfTheFittest { .. })) {
@@ -392,7 +392,7 @@ pub fn should_hunt(s: &State) -> bool {
     s.can_hunt()
         && s.days_left > HUNT_MORNINGS as u32
         && s.inmate(s.pos).is_some_and(|m| hunt_worth(s, m))
-        && !s.targets(s.pos).is_empty()
+        && s.has_target(s.pos)
 }
 
 /// A Lion worth marking a prey with: low enough that its mornings of growth aren't wasted past Chromatic.

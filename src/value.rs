@@ -8,10 +8,55 @@ pub const N_FEATURES: usize = 4 * 5 + 5 + 5 + 8 + ALL.len() + 29;
 
 /// The board as numbers for the model.
 pub fn features(s: &State) -> Vec<f32> {
-    let mut f = Vec::with_capacity(N_FEATURES);
+    let mut f = Feats::default();
+    fill(s, &mut f);
+    f.v[..f.n].to_vec()
+}
+
+/// The features without allocating (the solver asks for them at every step of every future).
+struct Feats {
+    v: [f32; N_FEATURES],
+    n: usize,
+}
+
+impl Default for Feats {
+    fn default() -> Self {
+        Feats { v: [0.0; N_FEATURES], n: 0 }
+    }
+}
+
+impl Feats {
+    #[inline]
+    fn push(&mut self, x: f32) {
+        self.v[self.n] = x;
+        self.n += 1;
+    }
+    #[inline]
+    fn extend_from_slice(&mut self, xs: &[f32]) {
+        for &x in xs {
+            self.push(x);
+        }
+    }
+}
+
+fn fill(s: &State, f: &mut Feats) {
+    // the Inmates once (cells in order)
+    let mut inm = [0usize; CELLS];
+    let mut ni = 0;
+    for i in 0..CELLS {
+        if s.inmate(i).is_some() {
+            inm[ni] = i;
+            ni += 1;
+        }
+    }
+    let inmates = &inm[..ni];
+    let mut fed = [false; CELLS];
+    for &i in inmates {
+        fed[i] = s.has_target(i);
+    }
     // Inmates by Code and rarity
     let mut grid = [[0f32; 5]; 4];
-    for i in s.inmates() {
+    for &i in inmates {
         let m = s.inmate(i).unwrap();
         let c = Code::ALL.iter().position(|&x| x == m.code).unwrap();
         grid[c][(m.rarity as usize).min(4)] += 1.0;
@@ -24,8 +69,8 @@ pub fn features(s: &State) -> Vec<f32> {
         f.push((0..4).filter(|&c| grid[c][r] > 0.0).count() as f32);
     }
     let mut eaters = [0f32; 5];
-    for i in s.inmates() {
-        if !s.targets(i).is_empty() {
+    for &i in inmates {
+        if fed[i] {
             eaters[(s.inmate(i).unwrap().rarity as usize).min(4)] += 1.0;
         }
     }
@@ -35,8 +80,8 @@ pub fn features(s: &State) -> Vec<f32> {
     let raw = *RAW.get_or_init(|| std::env::var("VDAYS_RAW").is_ok());
     let days = if raw { s.days_left as f32 } else { (s.days_left as f32).min(20.0) };
     let chroma = s.chromatics as f32;
-    let locked = s.locked().len() as f32;
-    let n = s.inmates().len() as f32;
+    let locked = (0..CELLS).filter(|&i| s.cells[i] == Cell::Locked).count() as f32;
+    let n = ni as f32;
     f.push(days);
     f.push(days * days / 20.0);
     f.push(chroma);
@@ -78,14 +123,14 @@ pub fn features(s: &State) -> Vec<f32> {
     f.push(if s.setup.cage_fight { 1.0 } else { 0.0 });
     f.push(if s.setup.tyranny { 1.0 } else { 0.0 });
     // what's in reach of the warden's next walk (the 6 cells ahead): doors, Inmates with food, the office
-    let ahead: Vec<usize> = (1..=6).map(|d| (s.pos + d) % CELLS).collect();
-    f.push(ahead.iter().filter(|&&c| s.cells[c] == Cell::Locked).count() as f32);
-    f.push(ahead.iter().filter(|&&c| s.inmate(c).is_some() && !s.targets(c).is_empty()).count() as f32);
-    f.push(if ahead.contains(&0) { 1.0 } else { 0.0 });
+    let ahead = |d: usize| (s.pos + d) % CELLS;
+    f.push((1..=6).filter(|&d| s.cells[ahead(d)] == Cell::Locked).count() as f32);
+    f.push((1..=6).filter(|&d| fed[ahead(d)]).count() as f32);
+    f.push(if (1..=6).any(|d| ahead(d) == 0) { 1.0 } else { 0.0 });
     // neighbours: Inmates side by side, and locked cells next to Inmates
     let mut pairs = 0f32;
     let mut beside_doors = 0f32;
-    for i in s.inmates() {
+    for &i in inmates {
         let r = (i + 1) % CELLS;
         if s.inmate(r).is_some() {
             pairs += 1.0;
@@ -99,19 +144,19 @@ pub fn features(s: &State) -> Vec<f32> {
     f.push(pairs);
     f.push(beside_doors);
     // the best Inmate and how many of the top two rarities
-    let top = s.inmates().iter().map(|&i| s.inmate(i).unwrap().rarity).max().unwrap_or(0);
+    let top = inmates.iter().map(|&i| s.inmate(i).unwrap().rarity).max().unwrap_or(0);
     f.push(top as f32);
-    f.push(s.inmates().iter().filter(|&&i| s.inmate(i).unwrap().rarity + 1 >= top && top > 0).count() as f32);
+    f.push(inmates.iter().filter(|&&i| s.inmate(i).unwrap().rarity + 1 >= top && top > 0).count() as f32);
     f.push(s.bites_today as f32);
-    debug_assert_eq!(f.len(), N_FEATURES);
-    f
+    debug_assert_eq!(f.n, N_FEATURES);
 }
 
 /// A small network (one hidden layer) over the features, loaded from data/value.json.
 pub struct Model {
-    mean: Vec<f32>,
-    scale: Vec<f32>,
-    w1: Vec<Vec<f32>>,
+    /// The first layer with the features' normalisation folded in, by feature: hidden k = sum over features i of
+    /// w1[i*H + k] * raw feature i, + b1[k] (most features are 0 on a given board, and are skipped).
+    w1: Vec<f32>,
+    hidden: usize,
     b1: Vec<f32>,
     w2: Vec<f32>,
     b2: f32,
@@ -126,26 +171,54 @@ impl Model {
         if mean.len() != N_FEATURES {
             return None;
         }
+        let scale = vecf(&v["scale"])?;
+        let rows = v["w1"].as_array()?.iter().map(vecf).collect::<Option<Vec<_>>>()?;
+        let b1 = vecf(&v["b1"])?;
+        if scale.len() != N_FEATURES || rows.iter().any(|r| r.len() != N_FEATURES) || b1.len() != rows.len() {
+            return None;
+        }
+        let h = rows.len();
+        if h > 128 {
+            return None;
+        }
+        let mut w1 = vec![0f32; h * N_FEATURES];
+        let mut b = Vec::with_capacity(h);
+        for (k, (row, b0)) in rows.iter().zip(&b1).enumerate() {
+            let mut shift = *b0;
+            for i in 0..N_FEATURES {
+                let w = row[i] / scale[i];
+                w1[i * h + k] = w;
+                shift -= w * mean[i];
+            }
+            b.push(shift);
+        }
         Some(Model {
-            mean,
-            scale: vecf(&v["scale"])?,
-            w1: v["w1"].as_array()?.iter().map(vecf).collect::<Option<Vec<_>>>()?,
-            b1: vecf(&v["b1"])?,
+            w1,
+            hidden: h,
+            b1: b,
             w2: vecf(&v["w2"])?,
             b2: v["b2"].as_f64()? as f32,
         })
     }
 
     pub fn eval(&self, s: &State) -> f64 {
-        let x: Vec<f32> = features(s)
-            .iter()
-            .zip(self.mean.iter().zip(&self.scale))
-            .map(|(v, (m, sc))| (v - m) / sc)
-            .collect();
+        let mut f = Feats::default();
+        fill(s, &mut f);
+        let h = self.hidden;
+        let mut acc = [0f32; 128];
+        let acc = &mut acc[..h.min(128)];
+        acc.copy_from_slice(&self.b1[..acc.len()]);
+        for (i, &x) in f.v.iter().enumerate() {
+            if x != 0.0 {
+                let col = &self.w1[i * h..i * h + acc.len()];
+                for (a, w) in acc.iter_mut().zip(col) {
+                    *a += x * w;
+                }
+            }
+        }
         let mut out = self.b2;
-        for (row, (b, w)) in self.w1.iter().zip(self.b1.iter().zip(&self.w2)) {
-            let h: f32 = row.iter().zip(&x).map(|(a, b)| a * b).sum::<f32>() + b;
-            out += h.max(0.0) * w;
+        for (a, w) in acc.iter().zip(&self.w2) {
+            out += a.max(0.0) * w;
         }
         out as f64
     }

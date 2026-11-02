@@ -178,6 +178,8 @@ mod win {
         changed: bool,
         /// The line drawn at the top: the boxed option's expected Chromatics and chance of 10.
         line: Option<String>,
+        /// Solving a new screen: the boxes are hidden and a progress bar shows instead.
+        busy: bool,
     }
 
     static SHARED: OnceLock<Arc<Mutex<Shared>>> = OnceLock::new();
@@ -195,6 +197,14 @@ mod win {
         let mut s = shared().lock().unwrap();
         if s.boxes != b {
             s.boxes = b;
+            s.changed = true;
+        }
+    }
+
+    fn set_busy(b: bool) {
+        let mut s = shared().lock().unwrap();
+        if s.busy != b {
+            s.busy = b;
             s.changed = true;
         }
     }
@@ -854,6 +864,7 @@ mod win {
             // a card click (selecting an instrument) doesn't change the screen: the boxes stay
             if live && !card_click {
                 set_boxes(Vec::new());
+                set_line(None);
             }
         }
 
@@ -1022,6 +1033,16 @@ mod win {
                 self.due = Some(Instant::now() + RECHECK);
                 return;
             }
+            // a new screen (clearly different from the last one solved): the old boxes go now, a bar shows the work
+            // (only after a screen with advice, or on a pop-up: elsewhere in the game nothing shows)
+            let new_screen = Self::changed_spots(&print, &self.last_print) > 60;
+            let had_advice = !self.shown_boxes.is_empty() || self.popup != Popup::None;
+            if new_screen {
+                set_boxes(Vec::new());
+                set_line(None);
+                self.shown_boxes.clear();
+            }
+            set_busy(new_screen && had_advice);
             self.last_print = print;
             let fast = self.last_event.elapsed() < Duration::from_secs(3) || self.pooled.is_empty();
             // a game log without the pop-up lines (seen on another computer): the instrument offer and the treasure are
@@ -1057,6 +1078,7 @@ mod win {
             } else {
                 FUTURES / 2
             };
+            tartarus::advisor::set_look(self.pooled_looks as u64);
             let solved = Instant::now();
             let mut a = pool(fast).install(|| advise(&f, popup, st, futures));
             if !a.options.is_empty() {
@@ -1064,6 +1086,7 @@ mod win {
                 let m = &mut self.ms_per_future[fast as usize];
                 *m = if *m > 0.0 { 0.5 * *m + 0.5 * per } else { per };
             }
+            set_busy(false);
             let weight = futures as f64 / FUTURES as f64;
             save_state(&self.st);
             // the same screen: same kind and the warden in the same cell (a cell misread between two looks doesn't
@@ -1416,13 +1439,13 @@ mod win {
     // ---------- the window that draws the boxes ----------
 
     fn draw(hwnd: HWND) {
-        let (boxes, game, show, line) = {
+        let (boxes, game, show, line, busy) = {
             let mut s = shared().lock().unwrap();
             s.changed = false;
-            (s.boxes.clone(), s.game, s.show, s.line.clone())
+            (s.boxes.clone(), s.game, s.show, s.line.clone(), s.busy)
         };
         unsafe {
-            let Some((gx, gy, gw, gh)) = game.filter(|_| show && !boxes.is_empty()) else {
+            let Some((gx, gy, gw, gh)) = game.filter(|_| show && (!boxes.is_empty() || busy)) else {
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 return;
             };
@@ -1473,6 +1496,26 @@ mod win {
                 for (i, &on) in mask.iter().enumerate() {
                     if on {
                         put(tx + (i % tw) as i32, ty + (i / tw) as i32, [120, 255, 160, 255]);
+                    }
+                }
+            }
+            // the progress bar, under the line's place: how much of the solving is done
+            if busy {
+                let scale = (gh / 400).max(2);
+                let (bw, bh) = (120 * scale, 3 * scale);
+                let (bx, by) = (gw / 2 - bw / 2, 6 * scale + 7 * scale + 10 * scale);
+                let done = (tartarus::solver::progress() * bw as f64) as i32;
+                for y in by - 2..by + bh + 2 {
+                    for x in bx - 2..bx + bw + 2 {
+                        put(x, y, [0, 0, 0, 190]);
+                    }
+                }
+                for y in by..by + bh {
+                    for x in bx..bx + done {
+                        put(x, y, [120, 255, 160, 255]);
+                    }
+                    for x in bx + done..bx + bw {
+                        put(x, y, [40, 70, 50, 220]);
                     }
                 }
             }
@@ -1545,7 +1588,8 @@ mod win {
                         s.game = rect;
                         s.changed = true;
                     }
-                    s.changed
+                    // the progress bar moves while solving
+                    s.changed || s.busy
                 };
                 if changed {
                     draw(hwnd);

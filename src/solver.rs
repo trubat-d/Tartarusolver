@@ -7,6 +7,26 @@ use crate::policy;
 use crate::rng::Rng;
 use rayon::prelude::*;
 
+/// How far the solver is in its current evaluation: futures played and futures planned (for a progress bar).
+pub static PROGRESS_DONE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub static PROGRESS_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn progress_start(total: usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    PROGRESS_DONE.store(0, Relaxed);
+    PROGRESS_TOTAL.store(total.max(1), Relaxed);
+}
+
+fn progress_add(n: usize) {
+    PROGRESS_DONE.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The share of the current evaluation done, 0 to 1.
+pub fn progress() -> f64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    (PROGRESS_DONE.load(Relaxed) as f64 / PROGRESS_TOTAL.load(Relaxed).max(1) as f64).min(1.0)
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Action {
     Go(usize),
@@ -231,6 +251,7 @@ fn average(
         .map(|k| {
             let mut rng = Rng::new(seed.wrapping_add(k as u64 * 0x2545_F491_4F6C_DD1D));
             let end = start(&mut rng);
+            progress_add(1);
             let (score, c, ult, full) = result(&end);
             (score, c, ult, full, c * c, ult * ult)
         })
@@ -244,6 +265,127 @@ fn average(
     let um = ult / n;
     let uvar = (usq / n - um * um).max(0.0);
     (score / n, mean, um, full / n, 2.0 * (var / n).sqrt(), 2.0 * (uvar / n).sqrt())
+}
+
+/// Running sums over the futures played so far for one option (futures numbered from 0, the same numbers for every
+/// option: common random numbers).
+#[derive(Clone, Copy, Default)]
+struct Sums {
+    n: f64,
+    score: f64,
+    chroma: f64,
+    ult: f64,
+    full: f64,
+    sq: f64,
+    usq: f64,
+}
+
+impl Sums {
+    /// Plays futures `from..to` of option `a` and adds them.
+    fn add(&mut self, s: &State, a: Action, from: usize, to: usize, seed: u64) {
+        let (score, chroma, ult, full, sq, usq) = (from..to)
+            .into_par_iter()
+            .map(|k| {
+                let mut rng = Rng::new(seed.wrapping_add(k as u64 * 0x2545_F491_4F6C_DD1D));
+                let end = play(s.clone(), a, &mut rng);
+                progress_add(1);
+                let (score, c, ult, full) = result(&end);
+                (score, c, ult, full, c * c, ult * ult)
+            })
+            .reduce(
+                || (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                |x, y| (x.0 + y.0, x.1 + y.1, x.2 + y.2, x.3 + y.3, x.4 + y.4, x.5 + y.5),
+            );
+        self.n += (to - from) as f64;
+        self.score += score;
+        self.chroma += chroma;
+        self.ult += ult;
+        self.full += full;
+        self.sq += sq;
+        self.usq += usq;
+    }
+
+    fn outcome(&self, action: Action) -> Outcome {
+        let n = self.n.max(1.0);
+        let mean = self.chroma / n;
+        let var = (self.sq / n - mean * mean).max(0.0);
+        let um = self.ult / n;
+        let uvar = (self.usq / n - um * um).max(0.0);
+        Outcome {
+            action,
+            score: self.score / n,
+            chromatics: mean,
+            ultimates: um,
+            full: self.full / n,
+            margin: 2.0 * (var / n).sqrt(),
+            ult_margin: 2.0 * (uvar / n).sqrt(),
+        }
+    }
+}
+
+/// Like `evaluate_adaptive`, as a race: every option is played on a quarter of the futures first, the ones clearly
+/// behind the best (by more than both margins together) stop there, the others go on, doubling, up to `futures`;
+/// then the close calls get 4 times the futures. Most of the work goes to the options that could be best.
+pub fn evaluate_race(s: &State, phase: &Phase, futures: usize, seed: u64) -> Vec<Outcome> {
+    let acts = actions(s, phase);
+    if acts.len() < 2 {
+        return evaluate(s, phase, futures, seed);
+    }
+    let at10 = s.chromatics >= MAX_CHROMATICS;
+    let val = |o: &Outcome| if at10 { (o.ultimates, o.ult_margin) } else { (o.chromatics, o.margin) };
+    // planned: every option to `futures`, plus the close calls (a guess: two options to 4 times); dropping options
+    // early makes the bar jump ahead
+    progress_start(acts.len() * futures + 2 * 3 * futures);
+    let mut sums = vec![Sums::default(); acts.len()];
+    let mut alive: Vec<usize> = (0..acts.len()).collect();
+    let mut done = 0;
+    let mut n = (futures / 4).max(50).min(futures);
+    loop {
+        for &k in &alive {
+            sums[k].add(s, acts[k], done, n, seed);
+        }
+        done = n;
+        if done >= futures {
+            break;
+        }
+        let outs: Vec<(usize, (f64, f64))> = alive.iter().map(|&k| (k, val(&sums[k].outcome(acts[k])))).collect();
+        let best = outs.iter().map(|o| o.1).fold((f64::MIN, 0.0), |b, x| if x.0 > b.0 { x } else { b });
+        let before = alive.len();
+        alive.retain(|&k| {
+            let v = outs.iter().find(|o| o.0 == k).unwrap().1;
+            best.0 - v.0 <= best.1 + v.1
+        });
+        // the dropped options' remaining futures won't be played
+        progress_add((before - alive.len()) * (futures - done));
+        if alive.len() < 2 {
+            break;
+        }
+        n = (n * 2).min(futures);
+    }
+    // the close calls: up to 4 options within the margin of the best, played to 4 times the futures
+    let mut outs: Vec<(usize, Outcome)> = alive.iter().map(|&k| (k, sums[k].outcome(acts[k]))).collect();
+    outs.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap());
+    if outs.len() >= 2 {
+        let b = val(&outs[0].1);
+        let close: Vec<usize> = outs
+            .iter()
+            .filter(|o| b.0 - val(&o.1).0 <= b.1.max(val(&o.1).1))
+            .take(4)
+            .map(|o| o.0)
+            .collect();
+        if close.len() >= 2 {
+            let to = futures * 4;
+            for k in close {
+                let from = sums[k].n as usize;
+                if from < to {
+                    sums[k].add(s, acts[k], from, to, seed);
+                }
+            }
+        }
+    }
+    let mut out: Vec<Outcome> = (0..acts.len()).map(|k| sums[k].outcome(acts[k])).collect();
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    out
 }
 
 fn evaluate_one(s: &State, a: Action, futures: usize, seed: u64) -> Outcome {
@@ -288,6 +430,7 @@ pub fn evaluate_adaptive(s: &State, phase: &Phase, futures: usize, seed: u64) ->
 /// rest by the rules), since the order matters (opening cells first, then raising them). Returns each first pick
 /// with its best follow-up.
 pub fn evaluate_treasure_pairs(s: &State, futures: usize, seed: u64) -> Vec<(Outcome, Treasure)> {
+    progress_start(Treasure::ALL.len() * Treasure::ALL.len() * futures);
     let mut out: Vec<(Outcome, Treasure)> = Treasure::ALL
         .into_iter()
         .map(|t1| {
@@ -329,6 +472,7 @@ pub fn evaluate_treasure_pairs(s: &State, futures: usize, seed: u64) -> Vec<(Out
 }
 
 pub fn evaluate(s: &State, phase: &Phase, futures: usize, seed: u64) -> Vec<Outcome> {
+    progress_start(actions(s, phase).len() * futures);
     let mut out: Vec<Outcome> = actions(s, phase)
         .into_iter()
         .map(|a| evaluate_one(s, a, futures, seed))
