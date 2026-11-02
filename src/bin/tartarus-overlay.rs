@@ -180,6 +180,9 @@ mod win {
         line: Option<String>,
         /// Solving a new screen: the boxes are hidden and a progress bar shows instead.
         busy: bool,
+        /// When the solving started and how long it should take (ms), for a bar that moves with time.
+        busy_since: Option<Instant>,
+        busy_ms: f64,
     }
 
     static SHARED: OnceLock<Arc<Mutex<Shared>>> = OnceLock::new();
@@ -205,7 +208,24 @@ mod win {
         let mut s = shared().lock().unwrap();
         if s.busy != b {
             s.busy = b;
+            s.busy_since = b.then(Instant::now);
             s.changed = true;
+        }
+    }
+
+    /// How long the solving now going on should take (the bar's pace).
+    fn set_busy_ms(ms: f64) {
+        shared().lock().unwrap().busy_ms = ms;
+    }
+
+    /// The bar's fill: steady with time up to 90% at the expected end, then creeping on (never quite full) if it runs
+    /// late.
+    fn bar_fill(since: Option<Instant>, ms: f64) -> f64 {
+        let t = since.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0) / ms.max(50.0);
+        if t < 1.0 {
+            0.9 * t
+        } else {
+            0.9 + 0.1 * (1.0 - (-(t - 1.0) * 1.5).exp())
         }
     }
 
@@ -1083,6 +1103,7 @@ mod win {
                 FUTURES / 2
             };
             tartarus::advisor::set_look(self.pooled_looks as u64);
+            set_busy_ms(if speed > 0.0 { speed * futures as f64 * 1.15 } else { LOOK_MS });
             let solved = Instant::now();
             let mut a = pool(fast).install(|| advise(&f, popup, st, futures));
             if !a.options.is_empty() {
@@ -1445,10 +1466,11 @@ mod win {
     // ---------- the window that draws the boxes ----------
 
     fn draw(hwnd: HWND) {
-        let (boxes, game, show, line, busy) = {
+        let (boxes, game, show, line, busy, fill) = {
             let mut s = shared().lock().unwrap();
             s.changed = false;
-            (s.boxes.clone(), s.game, s.show, s.line.clone(), s.busy)
+            let fill = bar_fill(s.busy_since, s.busy_ms);
+            (s.boxes.clone(), s.game, s.show, s.line.clone(), s.busy, fill)
         };
         unsafe {
             let Some((gx, gy, gw, gh)) = game.filter(|_| show && (!boxes.is_empty() || busy)) else {
@@ -1510,7 +1532,7 @@ mod win {
                 let scale = (gh / 400).max(2);
                 let (bw, bh) = (120 * scale, 3 * scale);
                 let (bx, by) = (gw / 2 - bw / 2, 6 * scale + 7 * scale + 10 * scale);
-                let done = (tartarus::solver::progress() * bw as f64) as i32;
+                let done = (fill * bw as f64) as i32;
                 for y in by - 2..by + bh + 2 {
                     for x in bx - 2..bx + bw + 2 {
                         put(x, y, [0, 0, 0, 190]);
@@ -1761,7 +1783,8 @@ mod win {
                     say!("  [!] hotkey Ctrl+Alt+{vk} is taken by another program");
                 }
             }
-            SetTimer(hwnd, 1, 150, None);
+            // often enough for the progress bar to move smoothly
+            SetTimer(hwnd, 1, 40, None);
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
                 let _ = TranslateMessage(&msg);
