@@ -16,6 +16,8 @@ pub struct Settings {
     pub hide_notice: bool,
     /// The version whose terms were last accepted: a new version asks again.
     pub accepted: Option<String>,
+    /// Let screenshots and recordings show the boxes (off: the boxes are kept out of captures).
+    pub boxes_in_captures: bool,
 }
 
 impl Default for Settings {
@@ -28,6 +30,7 @@ impl Default for Settings {
             color: [40, 255, 90],
             hide_notice: false,
             accepted: None,
+            boxes_in_captures: false,
         }
     }
 }
@@ -50,6 +53,7 @@ impl Settings {
             color: v["color"].as_str().and_then(parse_color).unwrap_or(d.color),
             hide_notice: v["hide_notice"].as_bool().unwrap_or(false),
             accepted: v["accepted"].as_str().map(String::from),
+            boxes_in_captures: v["boxes_in_captures"].as_bool().unwrap_or(false),
         }
     }
 
@@ -62,6 +66,7 @@ impl Settings {
             "color": format_color(self.color),
             "hide_notice": self.hide_notice,
             "accepted": self.accepted,
+            "boxes_in_captures": self.boxes_in_captures,
         })
     }
 }

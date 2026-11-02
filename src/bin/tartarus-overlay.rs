@@ -90,6 +90,7 @@ mod win {
     const MENU_QUIT: usize = 2;
     const MENU_SETTINGS: usize = 3;
     const MENU_TERMS: usize = 4;
+    const MENU_CAPTURES: usize = 5;
     static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
     /// The icon in the taskbar's corner (notification area): right- or left-click for Boxes on/off and Quit.
@@ -367,6 +368,7 @@ mod win {
         let new = Settings {
             hide_notice: cur.hide_notice,
             accepted: cur.accepted.clone(),
+            boxes_in_captures: cur.boxes_in_captures,
             log: (!log.is_empty()).then_some(log),
             boxes_key: keys[0].trim().to_string(),
             redo_key: keys[1].trim().to_string(),
@@ -697,10 +699,25 @@ mod win {
         NOTICE.load(std::sync::atomic::Ordering::SeqCst) == 1
     }
 
+    /// Keep the boxes out of screen captures (Windows 10 2004 and later), unless the settings let screenshots show
+    /// them: on some computers a capture otherwise includes them, and the reader would see its own boxes (so it's off
+    /// by default, and best turned off again after taking the pictures).
+    unsafe fn apply_capture_setting(hwnd: HWND) {
+        let show = settings().lock().unwrap().boxes_in_captures;
+        let _ = SetWindowDisplayAffinity(hwnd, WINDOW_DISPLAY_AFFINITY(if show { 0 } else { 0x11 }));
+    }
+
     unsafe fn tray_menu(hwnd: HWND) {
         let Ok(m) = CreatePopupMenu() else { return };
         let _ = AppendMenuW(m, MF_STRING, MENU_BOXES, w!("Boxes on/off"));
         let _ = AppendMenuW(m, MF_STRING, MENU_SETTINGS, w!("Settings..."));
+        let shown = settings().lock().unwrap().boxes_in_captures;
+        let _ = AppendMenuW(
+            m,
+            if shown { MF_STRING | MF_CHECKED } else { MF_STRING },
+            MENU_CAPTURES,
+            w!("Show boxes in screenshots"),
+        );
         let _ = AppendMenuW(m, MF_STRING, MENU_TERMS, w!("Terms of use..."));
         let _ = AppendMenuW(m, MF_STRING, MENU_QUIT, w!("Quit Tartarus overlay"));
         let mut pt = POINT::default();
@@ -722,6 +739,14 @@ mod win {
             MENU_SETTINGS => open_settings(),
             MENU_TERMS => {
                 let _ = create_notice(true);
+            }
+            MENU_CAPTURES => {
+                {
+                    let mut st = settings().lock().unwrap();
+                    st.boxes_in_captures = !st.boxes_in_captures;
+                    save_settings(&st);
+                }
+                apply_capture_setting(hwnd);
             }
             MENU_BOXES => {
                 let _ = TO_WORKER
@@ -2423,9 +2448,7 @@ mod win {
             )
             .map_err(|e| e.to_string())?;
             add_tray(hwnd, instance);
-            // keep the boxes out of screen captures (Windows 10 2004 and later): on some computers a capture otherwise
-            // includes them, and the reader would see its own boxes over the game
-            let _ = SetWindowDisplayAffinity(hwnd, WINDOW_DISPLAY_AFFINITY(0x11));
+            apply_capture_setting(hwnd);
             register_hotkeys(hwnd);
             // often enough for the progress bar to move smoothly
             SetTimer(hwnd, 1, 40, None);
