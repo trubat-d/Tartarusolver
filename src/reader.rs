@@ -295,6 +295,8 @@ pub struct BoardRead {
     pub incidents: [bool; CELLS],
     /// Locked cells showing a "?" portrait: the rarity behind the door (its glow).
     pub revealed: [Option<u8>; CELLS],
+    /// Inmates with a Tusk mark (Iron Tongs of Lust) under their portrait.
+    pub tusks: [bool; CELLS],
 }
 
 impl BoardRead {
@@ -354,9 +356,10 @@ fn read_cell(f: &Frame, n: usize) -> CellRead {
     }
     let (x, y) = d.cells[n];
     // the padlock under the portrait spot
+    // (its lower part only: a Tusk mark's tip sits in the rows just above, y+45..48, and is no padlock)
     let mut gold = 0usize;
     let mut tot = 0usize;
-    for yy in y + 45..y + 70 {
+    for yy in y + 52..y + 70 {
         for xx in x - 12..x + 20 {
             let (h, s, v) = hsv(f.px(xx, yy));
             tot += 1;
@@ -616,8 +619,10 @@ pub fn read_board(f: &Frame) -> BoardRead {
         .count() as u8;
     let mut incidents = [false; CELLS];
     let mut revealed = [None; CELLS];
+    let mut tusks = [false; CELLS];
     for n in 1..CELLS {
         incidents[n] = incident_mark(f, d.cells[n]);
+        tusks[n] = matches!(cells[n], CellRead::Inmate { .. }) && tusk_mark(f, d.cells[n]);
         if cells[n] == CellRead::Locked {
             revealed[n] = revealed_door(f, d.cells[n]);
         }
@@ -633,7 +638,23 @@ pub fn read_board(f: &Frame) -> BoardRead {
         office_lit,
         incidents,
         revealed,
+        tusks,
     }
+}
+
+/// A Tusk mark: a cream tusk under the portrait, in the rows just above where a padlock would be (y+45..49), its
+/// colour yellower and more saturated than a padlock's (measured: tusks ~54 pixels, hue ~49, saturation ~0.46).
+fn tusk_mark(f: &Frame, (x, y): (usize, usize)) -> bool {
+    let mut n = 0;
+    for yy in y + 44..y + 50 {
+        for xx in x - 12..x + 22 {
+            let (h, s, v) = hsv(f.px(xx, yy));
+            if v > 0.6 && (0.35..0.6).contains(&s) && (42.0..56.0).contains(&h) {
+                n += 1;
+            }
+        }
+    }
+    n >= 25
 }
 
 /// A locked cell with a "?" portrait shows the rarity behind its door: the portrait has contrast where a plain

@@ -99,6 +99,8 @@ const CELL_XY: [(i32, i32); CELLS] = [
 /// What the screen can't show, kept between pictures and between starts of the overlay.
 #[derive(Clone, Debug, Default)]
 pub struct RunState {
+    /// Cells whose Inmate has a Tusk mark (Iron Tongs of Lust), as last read on the board.
+    pub tusks: u16,
     /// The days until the riot as read at the top of the board (used when the game log doesn't tell the day).
     pub days_read: Option<u32>,
     /// The last offer's names by slot, to fill a card the reader misses on the next picture of the same offer.
@@ -303,6 +305,10 @@ impl RunState {
         };
         // the warden's own cell has set its incident off already (or is the one being decided in)
         s.incidents = self.incidents & !(1u16 << warden) & !1;
+        // the Tusk marks seen, on the Elephants still there
+        s.tusks = (0..CELLS)
+            .filter(|&n| self.tusks & (1 << n) != 0 && s.inmate(n).is_some_and(|m| m.code == Code::Elephant))
+            .collect();
         s.usurp = self.usurp;
         s.chain = self.chain_at.is_some();
         for &(i, r) in &self.revealed {
@@ -737,6 +743,7 @@ fn advise_screen(f: &Frame, popup: Popup, st: &mut RunState, futures: usize) -> 
         st.incidents = (0..CELLS)
             .filter(|&n| b.incidents[n])
             .fold(0u16, |m, n| m | 1 << n);
+        st.tusks = (0..CELLS).filter(|&n| b.tusks[n]).fold(0u16, |m, n| m | 1 << n);
         st.revealed = (0..CELLS)
             .filter_map(|n| b.revealed[n].map(|r| (n, r)))
             .collect();
