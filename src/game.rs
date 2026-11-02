@@ -188,6 +188,8 @@ pub struct State {
     pub usurp: u8,
     /// Chain Reaction: the next move opens every locked cell on the way.
     pub chain: bool,
+    /// Sewer Ratway: right now, a jump to any cell but the Interrogation Room (`warp`).
+    pub ratway: bool,
 }
 
 /// The Prison Incidents (the cards seen in the user's runs).
@@ -280,6 +282,7 @@ impl State {
             incidents: 0,
             usurp: 0,
             chain: false,
+            ratway: false,
             revealed: Vec::new(),
             shown: 0,
         }
@@ -476,7 +479,8 @@ impl State {
             Incident::TreasureHunt => self.reveal(rng, |h| {
                 h.iter().filter(|x| x.1 <= MAGIC).map(|x| x.0).collect()
             }),
-            Incident::SewerRatway => {}
+            // a jump to any cell, chosen by the player (the policy, in a future)
+            Incident::SewerRatway => self.ratway = true,
         }
         if rng.chance(INCIDENT_FOLLOW_UP) {
             self.place_incidents(1, rng);
@@ -909,6 +913,22 @@ impl State {
         if self.has(ShortChainedShackles) && steps <= 3 && rng.chance(0.5) {
             self.open_random(1, rng);
         }
+    }
+
+    /// Sewer Ratway's jump: straight to cell `i` (no walk: nothing on the way, no walk effects), which opens and sets
+    /// off its Prison Incident like an arrival.
+    pub fn warp(&mut self, i: usize, rng: &mut Rng) {
+        self.ratway = false;
+        self.pos = i;
+        self.open(i, rng, true);
+        if self.has_incident(i) && self.inmate(i).is_some() {
+            self.trigger_incident(i, rng);
+        }
+    }
+
+    /// The cells Sewer Ratway can jump to.
+    pub fn warp_options(&self) -> Vec<usize> {
+        (1..CELLS).filter(|&c| c != self.pos).collect()
     }
 
     /// The Inmate in cell `eater` Consumes the one in `target`: up a tier (more with some instruments) with a

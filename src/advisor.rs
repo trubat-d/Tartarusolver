@@ -812,17 +812,19 @@ fn any_cell(b: &BoardRead, warden: usize, st: &mut RunState, futures: usize) -> 
     };
     let cells = read_cells(b, &mut a.notes);
     remember(st, cells, warden, b.chromatics);
-    let s = st.state(
+    let mut s = st.state(
         cells,
         warden,
         st.board.as_ref().map_or(b.chromatics, |x| x.chromatics),
     );
+    // a jump, not a walk: no Chain Reaction or Shackles on the way
+    s.ratway = true;
     a.board = Some(board_line(
         &cells,
         warden,
         st.board.as_ref().map_or(b.chromatics, |x| x.chromatics),
     ));
-    let dests: Vec<usize> = (1..CELLS).filter(|&c| c != warden).collect();
+    let dests = s.warp_options();
     let outs = run_solver(&s, &Phase::Move(dests), futures);
     a.options = options(&s, &outs);
     if let Some(Action::Go(c)) = outs.first().map(|o| o.action) {

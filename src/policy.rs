@@ -367,7 +367,12 @@ pub fn choose_instrument(offers: &[Instrument]) -> Instrument {
 
 pub fn resolve_picks(s: &mut State, rng: &mut Rng) {
     loop {
-        if s.picks > 0 {
+        if s.ratway {
+            // Sewer Ratway: jump where the rules would go
+            let options = s.warp_options();
+            let d = choose_destination(s, &options, rng);
+            s.warp(d, rng);
+        } else if s.picks > 0 {
             let t = choose_treasure(s, rng);
             s.treasure(t, rng);
         } else if s.offers > 0 {

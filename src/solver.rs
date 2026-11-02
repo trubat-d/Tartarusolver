@@ -145,7 +145,12 @@ pub fn actions(s: &State, phase: &Phase) -> Vec<Action> {
 fn play(mut s: State, a: Action, rng: &mut Rng) -> State {
     match a {
         Action::Go(i) => {
-            s.go(i, rng);
+            // a Sewer Ratway jump, or the day's walk
+            if s.ratway {
+                s.warp(i, rng);
+            } else {
+                s.go(i, rng);
+            }
             policy::resolve_picks(&mut s, rng);
             policy::decide(&mut s, rng);
         }

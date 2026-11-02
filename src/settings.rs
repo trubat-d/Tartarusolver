@@ -14,6 +14,8 @@ pub struct Settings {
     pub color: [u8; 3],
     /// The start-up notice was read and "Don't show this again" ticked.
     pub hide_notice: bool,
+    /// The version whose terms were last accepted: a new version asks again.
+    pub accepted: Option<String>,
 }
 
 impl Default for Settings {
@@ -25,6 +27,7 @@ impl Default for Settings {
             quit_key: "Ctrl+Alt+Q".into(),
             color: [40, 255, 90],
             hide_notice: false,
+            accepted: None,
         }
     }
 }
@@ -46,6 +49,7 @@ impl Settings {
             quit_key: key("quit_key", &d.quit_key),
             color: v["color"].as_str().and_then(parse_color).unwrap_or(d.color),
             hide_notice: v["hide_notice"].as_bool().unwrap_or(false),
+            accepted: v["accepted"].as_str().map(String::from),
         }
     }
 
@@ -57,6 +61,7 @@ impl Settings {
             "quit_key": self.quit_key,
             "color": format_color(self.color),
             "hide_notice": self.hide_notice,
+            "accepted": self.accepted,
         })
     }
 }

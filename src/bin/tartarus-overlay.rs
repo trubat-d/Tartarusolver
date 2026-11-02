@@ -89,6 +89,7 @@ mod win {
     const MENU_BOXES: usize = 1;
     const MENU_QUIT: usize = 2;
     const MENU_SETTINGS: usize = 3;
+    const MENU_TERMS: usize = 4;
     static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
     /// The icon in the taskbar's corner (notification area): right- or left-click for Boxes on/off and Quit.
@@ -362,8 +363,10 @@ mod win {
             MessageBoxW(hwnd, w!("That game log doesn't exist: pick UE_game.log with Browse... (or Auto)."), w!("Tartarus overlay"), MB_OK | MB_ICONWARNING);
             return;
         }
+        let cur = settings().lock().unwrap().clone();
         let new = Settings {
-            hide_notice: settings().lock().unwrap().hide_notice,
+            hide_notice: cur.hide_notice,
+            accepted: cur.accepted.clone(),
             log: (!log.is_empty()).then_some(log),
             boxes_key: keys[0].trim().to_string(),
             redo_key: keys[1].trim().to_string(),
@@ -453,6 +456,8 @@ mod win {
     const ID_LEAVE: i32 = 202;
     const ID_HIDE: i32 = 203;
     const ID_START: i32 = 204;
+    /// The notice opened from the tray icon, to read only.
+    static NOTICE_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     /// The notice's page: 0 the notice, 1 how to use it (after I accept).
     static NOTICE_PAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
@@ -561,9 +566,10 @@ mod win {
                 match (wp.0 & 0xFFFF) as i32 {
                     ID_AGREE => {
                         let hide = SendMessageW(ctrl(ID_HIDE), BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == 1;
-                        if hide {
+                        {
                             let mut st = settings().lock().unwrap();
-                            st.hide_notice = true;
+                            st.hide_notice = hide;
+                            st.accepted = Some(VERSION.to_string());
                             save_settings(&st);
                         }
                         // the same window turns to how to use it
@@ -577,7 +583,9 @@ mod win {
                         let _ = InvalidateRect(hwnd, None, true);
                     }
                     ID_START => {
-                        NOTICE.store(1, std::sync::atomic::Ordering::SeqCst);
+                        if !NOTICE_VIEW.load(std::sync::atomic::Ordering::SeqCst) {
+                            NOTICE.store(1, std::sync::atomic::Ordering::SeqCst);
+                        }
                         let _ = DestroyWindow(hwnd);
                     }
                     ID_LEAVE => {
@@ -590,8 +598,11 @@ mod win {
             }
             WM_CLOSE => {
                 // closing the notice quits; closing the how-to page (already accepted) starts
-                let accepted = NOTICE_PAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
-                NOTICE.store(if accepted { 1 } else { 2 }, std::sync::atomic::Ordering::SeqCst);
+                // (read from the tray icon: just closes)
+                if !NOTICE_VIEW.load(std::sync::atomic::Ordering::SeqCst) {
+                    let accepted = NOTICE_PAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+                    NOTICE.store(if accepted { 1 } else { 2 }, std::sync::atomic::Ordering::SeqCst);
+                }
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
@@ -611,12 +622,11 @@ mod win {
     }
 
     /// The notice at start (unless hidden in the settings): true to go on, false to quit.
-    fn show_notice() -> bool {
-        if settings().lock().unwrap().hide_notice {
-            return true;
-        }
-        unsafe {
-            let instance: HINSTANCE = GetModuleHandleW(None).map(|m| m.into()).unwrap_or_default();
+    /// The notice window: for accepting at start, or to read again from the tray icon (`view`: a Close button only).
+    unsafe fn create_notice(view: bool) -> Option<HWND> {
+        let instance: HINSTANCE = GetModuleHandleW(None).map(|m| m.into()).unwrap_or_default();
+        static CLASS: OnceLock<()> = OnceLock::new();
+        CLASS.get_or_init(|| {
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(notice_proc),
                 hInstance: instance,
@@ -626,32 +636,54 @@ mod win {
                 ..Default::default()
             };
             RegisterClassW(&wc);
-            let (w, h) = (680, 820.min(GetSystemMetrics(SM_CYSCREEN) - 60).max(600));
-            let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-            let y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
-            let Ok(hwnd) = CreateWindowExW(
-                WS_EX_TOPMOST,
-                w!("TartarusNotice"),
-                w!("Tartarus overlay"),
-                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                x.max(0),
-                y.max(0),
-                w,
-                h,
-                HWND::default(),
-                HMENU::default(),
-                instance,
-                None,
-            ) else {
-                return true;
-            };
-            dark_title(hwnd);
-            let button = w!("BUTTON");
-            add_control(hwnd, button, "Don't show this again", 3 | 0x0001_0000, false, 28, h - 110, 260, 24, ID_HIDE);
+        });
+        NOTICE_VIEW.store(view, std::sync::atomic::Ordering::SeqCst);
+        NOTICE_PAGE.store(0, std::sync::atomic::Ordering::SeqCst);
+        let (w, h) = (680, 820.min(GetSystemMetrics(SM_CYSCREEN) - 60).max(600));
+        let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+        let y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST,
+            w!("TartarusNotice"),
+            w!("Tartarus overlay"),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            x.max(0),
+            y.max(0),
+            w,
+            h,
+            HWND::default(),
+            HMENU::default(),
+            instance,
+            None,
+        )
+        .ok()?;
+        dark_title(hwnd);
+        let button = w!("BUTTON");
+        if view {
+            add_control(hwnd, button, "Close", 0x0001_0001, false, w - 150, h - 116, 110, 34, ID_START);
+        } else {
+            add_control(hwnd, button, "Don't show this again for this version", 3 | 0x0001_0000, false, 28, h - 110, 320, 24, ID_HIDE);
             add_control(hwnd, button, "I accept", 0x0001_0001, false, w - 290, h - 116, 130, 34, ID_AGREE);
             add_control(hwnd, button, "Quit", 0x0001_0000, false, w - 150, h - 116, 110, 34, ID_LEAVE);
-            let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(hwnd);
+        }
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+        Some(hwnd)
+    }
+
+    /// The notice at start: shown unless this version's terms were accepted with "Don't show this again" ticked (a
+    /// new version asks again). True to go on, false to quit.
+    fn show_notice() -> bool {
+        {
+            let st = settings().lock().unwrap();
+            if st.hide_notice && st.accepted.as_deref() == Some(VERSION) {
+                return true;
+            }
+        }
+        unsafe {
+            if create_notice(false).is_none() {
+                return true;
+            }
             let mut msg = MSG::default();
             while NOTICE.load(std::sync::atomic::Ordering::SeqCst) == 0
                 && GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool()
@@ -667,6 +699,7 @@ mod win {
         let Ok(m) = CreatePopupMenu() else { return };
         let _ = AppendMenuW(m, MF_STRING, MENU_BOXES, w!("Boxes on/off"));
         let _ = AppendMenuW(m, MF_STRING, MENU_SETTINGS, w!("Settings..."));
+        let _ = AppendMenuW(m, MF_STRING, MENU_TERMS, w!("Terms of use..."));
         let _ = AppendMenuW(m, MF_STRING, MENU_QUIT, w!("Quit Tartarus overlay"));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -685,6 +718,9 @@ mod win {
         match cmd.0 as usize {
             MENU_QUIT => quit(),
             MENU_SETTINGS => open_settings(),
+            MENU_TERMS => {
+                let _ = create_notice(true);
+            }
             MENU_BOXES => {
                 let _ = TO_WORKER
                     .get()
