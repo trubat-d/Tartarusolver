@@ -1056,7 +1056,10 @@ mod win {
             }
             // a new screen (clearly different from the last one solved): the old boxes go now, a bar shows the work
             // (only after a screen with advice, or on a pop-up: elsewhere in the game nothing shows)
-            let new_screen = Self::changed_spots(&print, &self.last_print) > 60;
+            // (not over the instrument or treasure cards: hovering a card lights it up, which isn't a new screen)
+            let on_cards = matches!(self.popup, Popup::Instrument | Popup::Treasure)
+                || matches!(self.guessed_popup, Popup::Instrument | Popup::Treasure);
+            let new_screen = !on_cards && Self::changed_spots(&print, &self.last_print) > 60;
             if new_screen {
                 set_boxes(Vec::new());
                 self.shown_boxes.clear();
@@ -1464,11 +1467,12 @@ mod win {
     // ---------- the window that draws the boxes ----------
 
     fn draw(hwnd: HWND) {
-        let (boxes, game, show, line, busy, fill) = {
+        let (boxes, game, show, line, busy, fill, left_ms) = {
             let mut s = shared().lock().unwrap();
             s.changed = false;
             let fill = bar_fill(s.busy_since, s.busy_ms);
-            (s.boxes.clone(), s.game, s.show, s.line.clone(), s.busy, fill)
+            let left = s.busy_ms - s.busy_since.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
+            (s.boxes.clone(), s.game, s.show, s.line.clone(), s.busy, fill, left)
         };
         unsafe {
             let Some((gx, gy, gw, gh)) =
@@ -1548,6 +1552,26 @@ mod win {
                     }
                     for x in bx + done..bx + bw {
                         put(x, y, [40, 70, 50, 220]);
+                    }
+                }
+                // beside the bar: the time before the next box
+                if busy {
+                    let label = if left_ms > 50.0 {
+                        format!("Next box in {:.1}s", left_ms / 1000.0)
+                    } else {
+                        "Next box: almost".to_string()
+                    };
+                    let (tw, th, mask) = tartarus::font::render(&label, scale as usize);
+                    let (tx, ty) = (bx + bw + 6 * scale, by + bh / 2 - th as i32 / 2);
+                    for y in ty - 2 * scale..ty + th as i32 + 2 * scale {
+                        for x in tx - 3 * scale..tx + tw as i32 + 3 * scale {
+                            put(x, y, [0, 0, 0, 190]);
+                        }
+                    }
+                    for (i, &on) in mask.iter().enumerate() {
+                        if on {
+                            put(tx + (i % tw) as i32, ty + (i / tw) as i32, [120, 255, 160, 255]);
+                        }
                     }
                 }
             }
