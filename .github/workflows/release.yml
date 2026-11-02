@@ -60,6 +60,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           draft: true
           body: |
+            First, in the game's settings, turn on **Enable log**: the overlay follows the game through its log file.
+
             Download `tartarus-overlay.exe`, start it, then play Tartarus Prison. It draws a box around the best
             choice. Quit or change settings from its icon next to the clock (hotkeys by default: Ctrl+Alt+B boxes
             on/off, Ctrl+Alt+R read again, Ctrl+Alt+Q quit; it also quits a couple of minutes after the game closes).

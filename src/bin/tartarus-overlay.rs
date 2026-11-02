@@ -464,6 +464,8 @@ mod win {
     fn ready_text() -> Vec<(bool, String)> {
         let st = settings().lock().unwrap().clone();
         vec![
+            (true, "Before you play".into()),
+            (false, "In the game's settings, turn on Enable log: the overlay follows the game through its log file, and without it misses some screens and the day.".into()),
             (true, "While you play".into()),
             (false, "A box marks the best choice: where to go, Consume / Replace / Hunt / End, which Inmate to eat, which instrument or treasure to take. In the bottom-left corner you see what that choice is expected to bring (Chromatics, and your chance of reaching 10), with a bar showing the time until the next box.".into()),
             (true, "Shortcuts".into()),
@@ -2005,7 +2007,7 @@ mod win {
                 warned = false;
             } else if !warned && last_growth.elapsed() > Duration::from_secs(120) {
                 say!(
-                    "{}  (the game log hasn't changed for 2 minutes: is the game running?)",
+                    "{}  (the game log hasn't changed for 2 minutes: is the game running, with Enable log on in its settings?)",
                     clock()
                 );
                 warned = true;

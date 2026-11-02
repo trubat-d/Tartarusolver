@@ -20,8 +20,10 @@ Whether a tool like this is allowed is set by the game's terms of service: check
 
 ## Use
 
-1. Download `tartarus-overlay.exe` from the [latest release](../../releases/latest).
-2. Start it, read the notice, click **I accept**, then play Tartarus Prison.
+1. In the game's settings, turn on **Enable log**. The overlay follows the game through its log file (UE_game.log):
+   without it, it can only guess from the screen, and misses or misreads some screens and the day.
+2. Download `tartarus-overlay.exe` from the [latest release](../../releases/latest).
+3. Start it, read the notice, click **I accept**, then play Tartarus Prison.
 
 Its icon sits next to the clock (it may be under the "^" arrow): click it for **Boxes on/off**, **Settings...** and
 **Quit**. Default hotkeys: Ctrl+Alt+B boxes on/off, Ctrl+Alt+R read the screen again, Ctrl+Alt+Q quit. It also quits
@@ -44,8 +46,8 @@ settings or tick "Don't show this again").
 Check that your copy is the original: in PowerShell, `Get-FileHash tartarus-overlay.exe` must show the SHA-256 listed
 in the release's `SHA256SUMS.txt`. Only download it from this repository's releases.
 
-**The boxes don't appear.** Make sure the game log was found (Settings... shows it), and that the game runs in a
-window or borderless window, not exclusive full screen.
+**The boxes don't appear, or come late.** Check that **Enable log** is on in the game's settings, that the game log
+was found (Settings... shows it), and that the game runs in a window or borderless window, not exclusive full screen.
 
 **Is the advice always right?** No. It comes from a simulation of the rules as they are known; a good choice can still
 end badly.
