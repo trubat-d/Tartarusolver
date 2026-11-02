@@ -703,6 +703,8 @@ mod win {
         /// Whether the game log tells the pop-ups (else they're told from the picture).
         log_popups: bool,
         guessed_popup: Popup,
+        /// Whether the last look boxed something (a Tartarus screen with a choice).
+        last_had_advice: bool,
         /// Looks pooled at this position.
         pooled_looks: u32,
         /// Milliseconds per future on this computer, [slow pool, fast pool] (0: not measured yet).
@@ -1036,13 +1038,15 @@ mod win {
             // a new screen (clearly different from the last one solved): the old boxes go now, a bar shows the work
             // (only after a screen with advice, or on a pop-up: elsewhere in the game nothing shows)
             let new_screen = Self::changed_spots(&print, &self.last_print) > 60;
-            let had_advice = !self.shown_boxes.is_empty() || self.popup != Popup::None;
             if new_screen {
                 set_boxes(Vec::new());
                 set_line(None);
                 self.shown_boxes.clear();
             }
-            set_busy(new_screen && had_advice);
+            // the bar shows whenever the boxes are down (a click took them, or a new screen) while solving, after a
+            // screen that had advice: in the rest of the game nothing shows
+            let boxes_down = shared().lock().unwrap().boxes.is_empty();
+            set_busy(boxes_down && (self.last_had_advice || self.popup != Popup::None));
             self.last_print = print;
             let fast = self.last_event.elapsed() < Duration::from_secs(3) || self.pooled.is_empty();
             // a game log without the pop-up lines (seen on another computer): the instrument offer and the treasure are
@@ -1087,6 +1091,7 @@ mod win {
                 *m = if *m > 0.0 { 0.5 * *m + 0.5 * per } else { per };
             }
             set_busy(false);
+            self.last_had_advice = !a.boxes.is_empty();
             let weight = futures as f64 / FUTURES as f64;
             save_state(&self.st);
             // the same screen: same kind and the warden in the same cell (a cell misread between two looks doesn't
@@ -1283,6 +1288,7 @@ mod win {
             log_popups: false,
             guessed_popup: Popup::None,
             pooled_looks: 0,
+            last_had_advice: false,
             ms_per_future: [0.0; 2],
             last_print: Vec::new(),
             boxes_of: Default::default(),
