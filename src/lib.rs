@@ -8,6 +8,7 @@ pub mod input;
 pub mod instruments;
 pub mod policy;
 pub mod reader;
+pub mod settings;
 pub mod rng;
 pub mod solver;
 pub mod value;

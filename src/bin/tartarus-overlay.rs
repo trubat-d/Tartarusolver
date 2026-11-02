@@ -60,8 +60,10 @@ mod win {
         RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+        RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+        MOD_SHIFT, MOD_WIN,
     };
+    use tartarus::settings::Settings;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
     const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -86,6 +88,7 @@ mod win {
     const WM_TRAY: u32 = WM_APP + 1;
     const MENU_BOXES: usize = 1;
     const MENU_QUIT: usize = 2;
+    const MENU_SETTINGS: usize = 3;
     static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
     /// The icon in the taskbar's corner (notification area): right- or left-click for Boxes on/off and Quit.
@@ -133,9 +136,455 @@ mod win {
         std::process::exit(0)
     }
 
+    /// The hotkeys from the settings, registered on the overlay window (again after a change).
+    unsafe fn register_hotkeys(hwnd: HWND) {
+        let st = settings().lock().unwrap().clone();
+        for (id, key) in [(HK_BOXES, &st.boxes_key), (HK_REDO, &st.redo_key), (HK_QUIT, &st.quit_key)] {
+            let _ = UnregisterHotKey(hwnd, id);
+            let Some((ctrl, alt, shift, win, vk)) = tartarus::settings::parse_hotkey(key) else {
+                continue;
+            };
+            let mut m = MOD_NOREPEAT.0;
+            if ctrl {
+                m |= MOD_CONTROL.0;
+            }
+            if alt {
+                m |= MOD_ALT.0;
+            }
+            if shift {
+                m |= MOD_SHIFT.0;
+            }
+            if win {
+                m |= MOD_WIN.0;
+            }
+            if RegisterHotKey(hwnd, id, HOT_KEY_MODIFIERS(m), vk).is_err() {
+                say!("  [!] hotkey {key} is taken by another program (change it in Settings, from the tray icon)");
+            }
+        }
+    }
+
+    // ---------- the settings window (from the tray icon) ----------
+
+    const ID_LOG: i32 = 101;
+    const ID_BOXES: i32 = 102;
+    const ID_REDO: i32 = 103;
+    const ID_QUIT: i32 = 104;
+    const ID_COLOR: i32 = 105;
+    const ID_BROWSE: i32 = 110;
+    const ID_AUTO: i32 = 111;
+    const ID_PICK: i32 = 112;
+    const ID_SAVE: i32 = 113;
+    const ID_CANCEL: i32 = 114;
+    static SETTINGS_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+    thread_local! {
+        static CONTROLS: std::cell::RefCell<std::collections::HashMap<i32, isize>> = Default::default();
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn ctrl(id: i32) -> HWND {
+        HWND(CONTROLS.with(|c| c.borrow().get(&id).copied().unwrap_or(0)) as *mut core::ffi::c_void)
+    }
+
+    unsafe fn text_of(h: HWND) -> String {
+        let n = GetWindowTextLengthW(h).max(0) as usize;
+        let mut buf = vec![0u16; n + 1];
+        let got = GetWindowTextW(h, &mut buf).max(0) as usize;
+        String::from_utf16_lossy(&buf[..got.min(n)])
+    }
+
+    unsafe fn set_text(h: HWND, t: &str) {
+        let w = wide(t);
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn add_control(parent: HWND, class: PCWSTR, text: &str, style: u32, edit: bool, x: i32, y: i32, w: i32, h: i32, id: i32) {
+        let t = wide(text);
+        let instance: HINSTANCE = GetModuleHandleW(None).map(|m| m.into()).unwrap_or_default();
+        let c = CreateWindowExW(
+            if edit { WS_EX_CLIENTEDGE } else { WINDOW_EX_STYLE(0) },
+            class,
+            PCWSTR(t.as_ptr()),
+            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | style),
+            x,
+            y,
+            w,
+            h,
+            parent,
+            HMENU(id as isize as *mut core::ffi::c_void),
+            instance,
+            None,
+        )
+        .unwrap_or_default();
+        let font = GetStockObject(DEFAULT_GUI_FONT);
+        SendMessageW(c, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+        CONTROLS.with(|m| m.borrow_mut().insert(id, c.0 as isize));
+    }
+
+    fn open_settings() {
+        unsafe {
+            let open = SETTINGS_HWND.load(std::sync::atomic::Ordering::SeqCst);
+            if open != 0 {
+                let _ = SetForegroundWindow(HWND(open as *mut core::ffi::c_void));
+                return;
+            }
+            let instance: HINSTANCE = GetModuleHandleW(None).map(|m| m.into()).unwrap_or_default();
+            static CLASS: OnceLock<()> = OnceLock::new();
+            CLASS.get_or_init(|| {
+                let wc = WNDCLASSW {
+                    lpfnWndProc: Some(settings_proc),
+                    hInstance: instance,
+                    lpszClassName: w!("TartarusSettings"),
+                    hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut core::ffi::c_void),
+                    hCursor: LoadCursorW(HINSTANCE::default(), IDC_ARROW).unwrap_or_default(),
+                    ..Default::default()
+                };
+                RegisterClassW(&wc);
+            });
+            let Ok(hwnd) = CreateWindowExW(
+                WS_EX_TOPMOST,
+                w!("TartarusSettings"),
+                w!("Tartarus overlay settings"),
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                500,
+                340,
+                HWND::default(),
+                HMENU::default(),
+                instance,
+                None,
+            ) else {
+                return;
+            };
+            SETTINGS_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
+            let st = settings().lock().unwrap().clone();
+            let (label, edit, button) = (w!("STATIC"), w!("EDIT"), w!("BUTTON"));
+            let (es, tab) = (0x80 | 0x0001_0000, 0x0001_0000); // ES_AUTOHSCROLL | WS_TABSTOP, WS_TABSTOP
+            add_control(hwnd, label, "Game log (leave empty: found through Steam)", 0, false, 16, 14, 440, 18, 0);
+            add_control(hwnd, edit, st.log.as_deref().unwrap_or(""), es, true, 16, 34, 300, 24, ID_LOG);
+            add_control(hwnd, button, "Browse...", tab, false, 322, 34, 76, 24, ID_BROWSE);
+            add_control(hwnd, button, "Auto", tab, false, 404, 34, 60, 24, ID_AUTO);
+            for (k, (name, value, id)) in [
+                ("Boxes on/off", &st.boxes_key, ID_BOXES),
+                ("Read the screen again", &st.redo_key, ID_REDO),
+                ("Quit", &st.quit_key, ID_QUIT),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let y = 76 + 32 * k as i32;
+                add_control(hwnd, label, name, 0, false, 16, y + 4, 150, 18, 0);
+                add_control(hwnd, edit, value, es, true, 170, y, 150, 24, id);
+            }
+            add_control(hwnd, label, "Box color (#RRGGBB)", 0, false, 16, 176, 150, 18, 0);
+            add_control(hwnd, edit, &tartarus::settings::format_color(st.color), es, true, 170, 172, 100, 24, ID_COLOR);
+            add_control(hwnd, button, "Pick...", tab, false, 276, 172, 70, 24, ID_PICK);
+            add_control(hwnd, label, "Hotkeys: Ctrl, Alt, Shift or Win + a letter, a digit or F1-F24 (e.g. Ctrl+Alt+B, F8)", 0, false, 16, 212, 460, 18, 0);
+            add_control(hwnd, button, "Save", tab, false, 290, 252, 84, 28, ID_SAVE);
+            add_control(hwnd, button, "Cancel", tab, false, 382, 252, 84, 28, ID_CANCEL);
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+
+    unsafe fn browse_log(owner: HWND) -> Option<String> {
+        use windows::Win32::UI::Controls::Dialogs::*;
+        let filter: Vec<u16> = "Game log (UE_game.log)\0UE_game.log\0Log files (*.log)\0*.log\0All files\0*.*\0\0"
+            .encode_utf16()
+            .collect();
+        let mut file = [0u16; 1024];
+        let mut ofn = OPENFILENAMEW {
+            lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: owner,
+            lpstrFilter: PCWSTR(filter.as_ptr()),
+            lpstrFile: windows::core::PWSTR(file.as_mut_ptr()),
+            nMaxFile: file.len() as u32,
+            Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+            ..Default::default()
+        };
+        if GetOpenFileNameW(&mut ofn).as_bool() {
+            let n = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+            Some(String::from_utf16_lossy(&file[..n]))
+        } else {
+            None
+        }
+    }
+
+    unsafe fn pick_color(owner: HWND) {
+        use windows::Win32::UI::Controls::Dialogs::*;
+        let c = tartarus::settings::parse_color(&text_of(ctrl(ID_COLOR)))
+            .unwrap_or(settings().lock().unwrap().color);
+        let mut custom = [COLORREF(0x00FF_FFFF); 16];
+        let mut cc = CHOOSECOLORW {
+            lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+            hwndOwner: owner,
+            rgbResult: COLORREF(c[0] as u32 | (c[1] as u32) << 8 | (c[2] as u32) << 16),
+            lpCustColors: custom.as_mut_ptr(),
+            Flags: CC_RGBINIT | CC_FULLOPEN,
+            ..Default::default()
+        };
+        if ChooseColorW(&mut cc).as_bool() {
+            let v = cc.rgbResult.0;
+            set_text(ctrl(ID_COLOR), &tartarus::settings::format_color([v as u8, (v >> 8) as u8, (v >> 16) as u8]));
+        }
+    }
+
+    unsafe fn save_from_window(hwnd: HWND) {
+        let keys = [text_of(ctrl(ID_BOXES)), text_of(ctrl(ID_REDO)), text_of(ctrl(ID_QUIT))];
+        if let Some(bad) = keys.iter().find(|k| tartarus::settings::parse_hotkey(k).is_none()) {
+            let t = wide(&format!("\"{bad}\" isn't a hotkey I can use: Ctrl, Alt, Shift or Win + a letter, a digit or F1-F24 (e.g. Ctrl+Alt+B)."));
+            MessageBoxW(hwnd, PCWSTR(t.as_ptr()), w!("Tartarus overlay"), MB_OK | MB_ICONWARNING);
+            return;
+        }
+        let Some(color) = tartarus::settings::parse_color(&text_of(ctrl(ID_COLOR))) else {
+            MessageBoxW(hwnd, w!("The box color is written #RRGGBB, e.g. #28FF5A (or use Pick...)."), w!("Tartarus overlay"), MB_OK | MB_ICONWARNING);
+            return;
+        };
+        let log = text_of(ctrl(ID_LOG)).trim().to_string();
+        if !log.is_empty() && !Path::new(&log).is_file() {
+            MessageBoxW(hwnd, w!("That game log doesn't exist: pick UE_game.log with Browse... (or Auto)."), w!("Tartarus overlay"), MB_OK | MB_ICONWARNING);
+            return;
+        }
+        let new = Settings {
+            hide_notice: settings().lock().unwrap().hide_notice,
+            log: (!log.is_empty()).then_some(log),
+            boxes_key: keys[0].trim().to_string(),
+            redo_key: keys[1].trim().to_string(),
+            quit_key: keys[2].trim().to_string(),
+            color,
+        };
+        let old = std::mem::replace(&mut *settings().lock().unwrap(), new.clone());
+        save_settings(&new);
+        let overlay = TRAY_HWND.load(std::sync::atomic::Ordering::SeqCst);
+        if overlay != 0 {
+            register_hotkeys(HWND(overlay as *mut core::ffi::c_void));
+        }
+        if old.log != new.log {
+            if let Some(p) = new.log.clone().map(PathBuf::from).or_else(find_log) {
+                let _ = TO_WORKER.get().map(|t| t.send(Msg::Log(p)));
+            }
+        }
+        shared().lock().unwrap().changed = true;
+        let _ = DestroyWindow(hwnd);
+    }
+
+    unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        match msg {
+            WM_COMMAND if (wp.0 >> 16) & 0xFFFF == 0 => {
+                match (wp.0 & 0xFFFF) as i32 {
+                    ID_BROWSE => {
+                        if let Some(p) = browse_log(hwnd) {
+                            set_text(ctrl(ID_LOG), &p);
+                        }
+                    }
+                    ID_AUTO => set_text(ctrl(ID_LOG), ""),
+                    ID_PICK => pick_color(hwnd),
+                    ID_SAVE => save_from_window(hwnd),
+                    ID_CANCEL => {
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    _ => {}
+                }
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                SETTINGS_HWND.store(0, std::sync::atomic::Ordering::SeqCst);
+                CONTROLS.with(|c| c.borrow_mut().clear());
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+
+    // ---------- the notice at start ----------
+
+    const ID_AGREE: i32 = 201;
+    const ID_LEAVE: i32 = 202;
+    const ID_HIDE: i32 = 203;
+    /// 0 while the notice is up, 1 understood, 2 quit.
+    static NOTICE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+    fn notice_text() -> Vec<(bool, String)> {
+        let saved = if LITE {
+            "Nothing is sent anywhere. Only your settings are kept on this computer."
+        } else {
+            "Nothing is sent anywhere. This full version keeps screenshots and a journal of your runs in Documents\\Tartarus overlay on this computer, to improve the advice; delete that folder whenever you like."
+        };
+        vec![
+            (true, "What it does".into()),
+            (false, "Tartarus overlay reads the game's picture on your screen and its log file, plays thousands of possible futures for each choice in a simulation of the minigame's rules, and draws a box around the choice that ends best on average. It never clicks, types, or reads or changes the game's memory or files: you make every move yourself.".into()),
+            (true, "Not affiliated".into()),
+            (false, "An independent fan project. It is not affiliated with, endorsed, sponsored or approved by the developers or publishers of Torchlight: Infinite. Torchlight: Infinite and its names and images belong to their respective owners.".into()),
+            (true, "Processor use".into()),
+            (false, "For about half a second after each choice it calculates on all of your processor's cores, at low priority so the game comes first. Your fans may spin up briefly: that is expected.".into()),
+            (true, "No guarantee".into()),
+            (false, format!("The advice comes from a simulation of the rules as they are known, and can be wrong; a good choice can still end badly. The program is provided as is, without warranty of any kind, and you use it at your own risk. Its author is not liable for any loss or damage, in the game or otherwise, nor for any action the game's publisher may take on your account. Third-party tools may be against the game's terms of service: check them before use. {saved}")),
+        ]
+    }
+
+    unsafe extern "system" fn notice_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        let bg = COLORREF(0x0020_1A18); // a dark warm grey (BGR)
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                let mut rc = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rc);
+                let brush = CreateSolidBrush(bg);
+                FillRect(hdc, &rc, brush);
+                let _ = DeleteObject(brush);
+                // a green bar along the top, the overlay's color
+                let accent = CreateSolidBrush(COLORREF(0x005A_FF28));
+                let bar = RECT { left: 0, top: 0, right: rc.right, bottom: 5 };
+                FillRect(hdc, &bar, accent);
+                let _ = DeleteObject(accent);
+                let font = |height: i32, weight: i32| {
+                    let mut lf = LOGFONTW { lfHeight: height, lfWeight: weight, ..Default::default() };
+                    for (k, c) in "Segoe UI".encode_utf16().enumerate() {
+                        lf.lfFaceName[k] = c;
+                    }
+                    CreateFontIndirectW(&lf)
+                };
+                let (title, head, body) = (font(-28, 600), font(-17, 600), font(-15, 400));
+                SetBkMode(hdc, TRANSPARENT);
+                let mut y = 22;
+                let mut draw = |f: HFONT, color: u32, text: &str, y: &mut i32, gap: i32| {
+                    let old = SelectObject(hdc, f);
+                    SetTextColor(hdc, COLORREF(color));
+                    let mut t: Vec<u16> = text.encode_utf16().collect();
+                    let mut r = RECT { left: 28, top: *y, right: rc.right - 28, bottom: rc.bottom };
+                    let h = DrawTextW(hdc, &mut t, &mut r, DT_WORDBREAK | DT_LEFT | DT_NOPREFIX);
+                    SelectObject(hdc, old);
+                    *y += h + gap;
+                };
+                draw(title, 0x00F0_F0F0, "Tartarus overlay", &mut y, 2);
+                draw(body, 0x00A0_A0A0, &format!("Version {VERSION} - advice for the Tartarus Prison minigame"), &mut y, 14);
+                for (is_head, text) in notice_text() {
+                    if is_head {
+                        draw(head, 0x005A_FF28, &text, &mut y, 2);
+                    } else {
+                        draw(body, 0x00DC_DCDC, &text, &mut y, 12);
+                    }
+                }
+                for f in [title, head, body] {
+                    let _ = DeleteObject(f);
+                }
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_CTLCOLORSTATIC => {
+                // the check box on the dark background
+                let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                SetTextColor(hdc, COLORREF(0x00DC_DCDC));
+                SetBkColor(hdc, bg);
+                static BRUSH: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+                if BRUSH.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                    BRUSH.store(CreateSolidBrush(bg).0 as isize, std::sync::atomic::Ordering::Relaxed);
+                }
+                LRESULT(BRUSH.load(std::sync::atomic::Ordering::Relaxed))
+            }
+            WM_COMMAND if (wp.0 >> 16) & 0xFFFF == 0 => {
+                match (wp.0 & 0xFFFF) as i32 {
+                    ID_AGREE => {
+                        let hide = SendMessageW(ctrl(ID_HIDE), BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == 1;
+                        if hide {
+                            let mut st = settings().lock().unwrap();
+                            st.hide_notice = true;
+                            save_settings(&st);
+                        }
+                        NOTICE.store(1, std::sync::atomic::Ordering::SeqCst);
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    ID_LEAVE => {
+                        NOTICE.store(2, std::sync::atomic::Ordering::SeqCst);
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    _ => {}
+                }
+                LRESULT(0)
+            }
+            WM_CLOSE => {
+                NOTICE.store(2, std::sync::atomic::Ordering::SeqCst);
+                let _ = DestroyWindow(hwnd);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+
+    /// A dark title bar (Windows 10 20H1 and later; ignored elsewhere), to match the dark window.
+    unsafe fn dark_title(hwnd: HWND) {
+        let on: i32 = 1;
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(20),
+            &on as *const i32 as *const core::ffi::c_void,
+            4,
+        );
+    }
+
+    /// The notice at start (unless hidden in the settings): true to go on, false to quit.
+    fn show_notice() -> bool {
+        if settings().lock().unwrap().hide_notice {
+            return true;
+        }
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).map(|m| m.into()).unwrap_or_default();
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(notice_proc),
+                hInstance: instance,
+                lpszClassName: w!("TartarusNotice"),
+                hCursor: LoadCursorW(HINSTANCE::default(), IDC_ARROW).unwrap_or_default(),
+                hIcon: LoadIconW(instance, PCWSTR(1 as *const u16)).unwrap_or_default(),
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            let (w, h) = (680, 720);
+            let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+            let y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+            let Ok(hwnd) = CreateWindowExW(
+                WS_EX_TOPMOST,
+                w!("TartarusNotice"),
+                w!("Tartarus overlay"),
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                x.max(0),
+                y.max(0),
+                w,
+                h,
+                HWND::default(),
+                HMENU::default(),
+                instance,
+                None,
+            ) else {
+                return true;
+            };
+            dark_title(hwnd);
+            let button = w!("BUTTON");
+            add_control(hwnd, button, "Don't show this again", 3 | 0x0001_0000, false, 28, h - 110, 260, 24, ID_HIDE);
+            add_control(hwnd, button, "I accept", 0x0001_0001, false, w - 290, h - 116, 130, 34, ID_AGREE);
+            add_control(hwnd, button, "Quit", 0x0001_0000, false, w - 150, h - 116, 110, 34, ID_LEAVE);
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+            let mut msg = MSG::default();
+            while NOTICE.load(std::sync::atomic::Ordering::SeqCst) == 0
+                && GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool()
+            {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        NOTICE.load(std::sync::atomic::Ordering::SeqCst) == 1
+    }
+
     unsafe fn tray_menu(hwnd: HWND) {
         let Ok(m) = CreatePopupMenu() else { return };
         let _ = AppendMenuW(m, MF_STRING, MENU_BOXES, w!("Boxes on/off"));
+        let _ = AppendMenuW(m, MF_STRING, MENU_SETTINGS, w!("Settings..."));
         let _ = AppendMenuW(m, MF_STRING, MENU_QUIT, w!("Quit Tartarus overlay"));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -153,6 +602,7 @@ mod win {
         let _ = DestroyMenu(m);
         match cmd.0 as usize {
             MENU_QUIT => quit(),
+            MENU_SETTINGS => open_settings(),
             MENU_BOXES => {
                 let _ = TO_WORKER
                     .get()
@@ -165,6 +615,8 @@ mod win {
     enum Msg {
         Command(String),
         Redo,
+        /// Read this game log from now on (chosen in the settings).
+        Log(PathBuf),
     }
 
     static TO_WORKER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -562,6 +1014,27 @@ mod win {
         let d = base.join("TartarusSolver");
         let _ = std::fs::create_dir_all(&d);
         d
+    }
+
+    /// The settings in use (settings.json in the data folder).
+    fn settings() -> &'static Mutex<Settings> {
+        static S: OnceLock<Mutex<Settings>> = OnceLock::new();
+        S.get_or_init(|| {
+            Mutex::new(
+                std::fs::read_to_string(data_dir().join("settings.json"))
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                    .map(|v| Settings::from_json(&v))
+                    .unwrap_or_default(),
+            )
+        })
+    }
+
+    fn save_settings(s: &Settings) {
+        let _ = std::fs::write(
+            data_dir().join("settings.json"),
+            serde_json::to_string_pretty(&s.to_json()).unwrap_or_default(),
+        );
     }
 
     fn load_state() -> RunState {
@@ -1441,6 +1914,13 @@ mod win {
                         w.last_key.clear();
                         w.due = Some(Instant::now());
                     }
+                    Msg::Log(p) => match Tail::open(&p, 0) {
+                        Ok(t) => {
+                            tail = t;
+                            say!("{}  game log now: {}", clock(), p.display());
+                        }
+                        Err(e) => say!("{}  [!] {e}", clock()),
+                    },
                 }
             }
             if LITE && game_checked.elapsed() > Duration::from_secs(5) {
@@ -1485,6 +1965,7 @@ mod win {
             let left = s.busy_ms - s.busy_since.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
             (s.boxes.clone(), s.game, s.show, s.line.clone(), s.busy, fill, left)
         };
+        let color = settings().lock().unwrap().color;
         unsafe {
             let Some((gx, gy, gw, gh)) =
                 game.filter(|_| show && (!boxes.is_empty() || busy || line.is_some()))
@@ -1513,7 +1994,7 @@ mod win {
                     let c = if t < 0 || t > 4 {
                         [0, 0, 0, 200]
                     } else {
-                        [90, 255, 40, 255]
+                        [color[2], color[1], color[0], 255]
                     };
                     for x in x0 - t..=x1 + t {
                         put(x, y0 - t, c);
@@ -1698,6 +2179,9 @@ mod win {
             );
         }
         quick_edit_off();
+        if !show_notice() {
+            std::process::exit(0);
+        }
         let home = std::env::var("USERPROFILE").map_err(|_| "no USERPROFILE")?;
         let (y, mo, d, h, mi, s) = now_parts();
         let frames = PathBuf::from(home)
@@ -1719,6 +2203,15 @@ mod win {
             .windows(2)
             .find(|a| a[0] == "--log")
             .map(|a| PathBuf::from(&a[1]))
+            .or_else(|| {
+                settings()
+                    .lock()
+                    .unwrap()
+                    .log
+                    .clone()
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_file())
+            })
             .or_else(find_log);
         let Some(log) = log else {
             say!("  [!!] game log: not found through Steam. Start me with --log \"<path to UE_game.log>\"");
@@ -1810,18 +2303,7 @@ mod win {
             )
             .map_err(|e| e.to_string())?;
             add_tray(hwnd, instance);
-            for (id, vk) in [(HK_BOXES, 'B'), (HK_REDO, 'R'), (HK_QUIT, 'Q')] {
-                if RegisterHotKey(
-                    hwnd,
-                    id,
-                    HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0 | MOD_NOREPEAT.0),
-                    vk as u32,
-                )
-                .is_err()
-                {
-                    say!("  [!] hotkey Ctrl+Alt+{vk} is taken by another program");
-                }
-            }
+            register_hotkeys(hwnd);
             // often enough for the progress bar to move smoothly
             SetTimer(hwnd, 1, 40, None);
             let mut msg = MSG::default();
