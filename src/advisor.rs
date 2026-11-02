@@ -99,6 +99,8 @@ const CELL_XY: [(i32, i32); CELLS] = [
 /// What the screen can't show, kept between pictures and between starts of the overlay.
 #[derive(Clone, Debug, Default)]
 pub struct RunState {
+    /// The days until the riot as read at the top of the board (used when the game log doesn't tell the day).
+    pub days_read: Option<u32>,
     /// The last offer's names by slot, to fill a card the reader misses on the next picture of the same offer.
     pub last_offer: Vec<Option<String>>,
     pub rumor: Option<String>,
@@ -266,9 +268,11 @@ impl RunState {
     }
 
     fn days_left(&self) -> u32 {
-        match self.day {
-            Some((cur, max)) => max.saturating_sub(cur) + 1,
-            None => 10,
+        match (self.day, self.days_read) {
+            (Some((cur, max)), _) => max.saturating_sub(cur) + 1,
+            // "N day(s) until Riot" on the board: N more days after today's
+            (None, Some(n)) => n + 1,
+            (None, None) => 10,
         }
     }
 
@@ -448,6 +452,9 @@ fn options(s: &State, outs: &[solver::Outcome]) -> Vec<(String, f64, f64, f64)> 
 /// The advice on a picture, with the journal of the run (predictions, the box against what the player did, the end)
 /// added to its observations.
 pub fn advise(f: &Frame, popup: Popup, st: &mut RunState, futures: usize) -> Advice {
+    if let Some(n) = reader::read_days_left(f) {
+        st.days_read = Some(n);
+    }
     let mut a = advise_screen(f, popup, st, futures);
     a.unit = if st.board.as_ref().is_some_and(|b| b.chromatics >= MAX_CHROMATICS) {
         "Ultimates"

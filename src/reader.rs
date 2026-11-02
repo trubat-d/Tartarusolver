@@ -128,6 +128,8 @@ struct Data {
     objectives: Vec<(String, Vec<f32>)>,
     rumor_region: [usize; 4],
     rumors: Vec<(String, Vec<f32>)>,
+    /// "N day(s) until Riot" at the top of the board, by N.
+    days_left: Vec<(u32, Vec<f32>)>,
     incident_cards: Vec<(String, Vec<f32>)>,
 }
 
@@ -207,6 +209,14 @@ fn data() -> &'static Data {
                 [680, 318, 1240, 372]
             },
             // a name may come back as "name#2": another picture of the same card (it fades in)
+            days_left: r["days_left"]
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .filter_map(|(k, v)| Some((k.parse().ok()?, vecf(v))))
+                        .collect()
+                })
+                .unwrap_or_default(),
             rumors: r["rumors"]
                 .as_object()
                 .map(|o| {
@@ -889,6 +899,28 @@ pub fn label_vector(f: &Frame) -> Vec<f32> {
 pub fn objective_vector(f: &Frame) -> Vec<f32> {
     let [x0, y0, x1, y1] = data().objective_region;
     block_vector(f, x0, y0, x1 - x0, y1 - y0, 4, 2)
+}
+
+/// The top line "N day(s) until Riot" as a vector (its number and the words, which shift with the number's width).
+pub fn days_vector(f: &Frame) -> Vec<f32> {
+    block_vector(f, 780, 8, 220, 44, 2, 2)
+}
+
+/// The days until the riot, read from the top of the board (for computers whose game log doesn't tell the day).
+pub fn read_days_left(f: &Frame) -> Option<u32> {
+    let v = days_vector(f);
+    let mut best = (0.0f32, None);
+    for (n, t) in &data().days_left {
+        let s = dot(&v, t);
+        if s > best.0 {
+            best = (s, Some(*n));
+        }
+    }
+    if best.0 > 0.92 {
+        best.1
+    } else {
+        None
+    }
 }
 
 /// The Rumor card's title as the reader compares it: for learning a new Rumor.

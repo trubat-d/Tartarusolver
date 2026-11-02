@@ -2421,6 +2421,9 @@ mod win {
             )
             .map_err(|e| e.to_string())?;
             add_tray(hwnd, instance);
+            // keep the boxes out of screen captures (Windows 10 2004 and later): on some computers a capture otherwise
+            // includes them, and the reader would see its own boxes over the game
+            let _ = SetWindowDisplayAffinity(hwnd, WINDOW_DISPLAY_AFFINITY(0x11));
             register_hotkeys(hwnd);
             // often enough for the progress bar to move smoothly
             SetTimer(hwnd, 1, 40, None);
