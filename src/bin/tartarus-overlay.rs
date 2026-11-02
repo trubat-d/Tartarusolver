@@ -417,13 +417,15 @@ mod win {
         };
         vec![
             (true, "What it does".into()),
-            (false, "Tartarus overlay reads the game's picture on your screen and its log file, plays thousands of possible futures for each choice in a simulation of the minigame's rules, and draws a box around the choice that ends best on average. It never clicks, types, or reads or changes the game's memory or files: you make every move yourself.".into()),
+            (false, "Tartarus overlay reads the game's picture on your screen and its log file, plays thousands of possible futures for each choice in a simulation of the minigame's rules, and draws a box around the choice that ends best on average.".into()),
+            (true, "Purely an overlay".into()),
+            (false, "It only looks and shows. The boxes are drawn in a separate, see-through window on top of the game, like a note held over your screen. It never sends a click, a key press or any other input to the game, never plays or automates a move, and never reads or changes the game's memory, files or network traffic. Every decision and every click is yours.".into()),
             (true, "Not affiliated".into()),
             (false, "An independent fan project. It is not affiliated with, endorsed, sponsored or approved by the developers or publishers of Torchlight: Infinite. Torchlight: Infinite and its names and images belong to their respective owners.".into()),
             (true, "Processor use".into()),
             (false, "For about half a second after each choice it calculates on all of your processor's cores, at low priority so the game comes first. Your fans may spin up briefly: that is expected.".into()),
             (true, "No guarantee".into()),
-            (false, format!("The advice comes from a simulation of the rules as they are known, and can be wrong; a good choice can still end badly. The program is provided as is, without warranty of any kind, and you use it at your own risk. Its author is not liable for any loss or damage, in the game or otherwise, nor for any action the game's publisher may take on your account. Third-party tools may be against the game's terms of service: check them before use. {saved}")),
+            (false, format!("The advice comes from a simulation of the rules as they are known, and can be wrong; a good choice can still end badly. The program is provided as is, without warranty of any kind, and you use it at your own risk. Its author is not liable for any loss or damage, in the game or otherwise, nor for any action the game's publisher may take on your account. Whether a tool like this is allowed is set by the game's terms of service, which you should check yourself. {saved}")),
         ]
     }
 
@@ -544,7 +546,7 @@ mod win {
                 ..Default::default()
             };
             RegisterClassW(&wc);
-            let (w, h) = (680, 720);
+            let (w, h) = (680, 820.min(GetSystemMetrics(SM_CYSCREEN) - 60).max(600));
             let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
             let y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
             let Ok(hwnd) = CreateWindowExW(
