@@ -886,7 +886,6 @@ mod win {
             // a card click (selecting an instrument) doesn't change the screen: the boxes stay
             if live && !card_click {
                 set_boxes(Vec::new());
-                set_line(None);
             }
         }
 
@@ -1060,7 +1059,6 @@ mod win {
             let new_screen = Self::changed_spots(&print, &self.last_print) > 60;
             if new_screen {
                 set_boxes(Vec::new());
-                set_line(None);
                 self.shown_boxes.clear();
             }
             // the bar shows whenever the boxes are down (a click took them, or a new screen) while solving, after a
@@ -1191,12 +1189,12 @@ mod win {
                     a.options.insert(0, o);
                 }
             }
-            set_line(
-                a.options
-                    .first()
-                    .filter(|_| !self.shown_boxes.is_empty())
-                    .map(|o| tartarus::font::chance_line(a.unit, o.1, o.3)),
-            );
+            // the prediction stays up between decisions (updated at each choice), and goes away off Tartarus
+            if let Some(o) = a.options.first().filter(|_| !self.shown_boxes.is_empty()) {
+                set_line(Some(tartarus::font::chance_line(a.unit, o.1, o.3)));
+            } else if a.screen == "not the board" || self.popup == Popup::End {
+                set_line(None);
+            }
             self.shown_screen = screen;
             let key = format!("{}|{:?}|{:?}", a.screen, a.board, self.shown_best);
             // look again soon until the screen holds still (the first look may catch the end of an animation);
@@ -1473,7 +1471,9 @@ mod win {
             (s.boxes.clone(), s.game, s.show, s.line.clone(), s.busy, fill)
         };
         unsafe {
-            let Some((gx, gy, gw, gh)) = game.filter(|_| show && (!boxes.is_empty() || busy)) else {
+            let Some((gx, gy, gw, gh)) =
+                game.filter(|_| show && (!boxes.is_empty() || busy || line.is_some()))
+            else {
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 return;
             };
@@ -1510,12 +1510,16 @@ mod win {
                     }
                 }
             }
-            // the line at the top centre: white text on a dark band
-            if let Some(line) = line {
-                let scale = (gh / 400).max(2) as usize;
+            // the line and the bar in the bottom-left corner (nothing of the game's there): white text on a dark band,
+            // the bar under it
+            let scale = (gh / 400).max(2);
+            let (lx, bar_y) = (14 * scale, gh - 8 * scale);
+            let line_y = bar_y - 6 * scale - 7 * scale;
+            if let Some(line) = &line {
+                let scale = scale as usize;
                 let (tw, th, mask) = tartarus::font::render(&line, scale);
                 let pad = 4 * scale as i32;
-                let (tx, ty) = (gw / 2 - tw as i32 / 2, 6 * scale as i32);
+                let (tx, ty) = (lx, line_y);
                 for y in ty - pad..ty + th as i32 + pad {
                     for x in tx - pad..tx + tw as i32 + pad {
                         put(x, y, [0, 0, 0, 190]);
@@ -1527,11 +1531,11 @@ mod win {
                     }
                 }
             }
-            // the progress bar, under the line's place: how much of the solving is done
-            if busy {
-                let scale = (gh / 400).max(2);
+            // the progress bar under the line: always there, full when the advice is up, filling while solving
+            if line.is_some() || busy {
                 let (bw, bh) = (120 * scale, 3 * scale);
-                let (bx, by) = (gw / 2 - bw / 2, 6 * scale + 7 * scale + 10 * scale);
+                let (bx, by) = (lx, bar_y);
+                let fill = if busy { fill } else { 1.0 };
                 let done = (fill * bw as f64) as i32;
                 for y in by - 2..by + bh + 2 {
                     for x in bx - 2..bx + bw + 2 {
