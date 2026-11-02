@@ -1174,8 +1174,19 @@ mod win {
                 set_boxes(boxes.clone());
                 self.shown_boxes = boxes;
                 self.shown_best = best.as_ref().map(|b| b.0.clone());
-            } else if !self.shown_boxes.is_empty() {
-                set_boxes(self.shown_boxes.clone());
+            } else {
+                // the same option stays boxed, drawn where it is now (the latest look's place for it: the eye before
+                // the board is seen, the card after), also after the boxes were taken down meanwhile
+                let boxes = self
+                    .shown_best
+                    .as_ref()
+                    .and_then(|p| self.boxes_of.get(p).cloned())
+                    .filter(|b| !b.is_empty())
+                    .unwrap_or_else(|| self.shown_boxes.clone());
+                if !boxes.is_empty() {
+                    set_boxes(boxes.clone());
+                    self.shown_boxes = boxes;
+                }
             }
             if !same_screen {
                 self.boxes_of
