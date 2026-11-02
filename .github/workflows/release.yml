@@ -12,10 +12,40 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      HAS_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build
         run: cargo build --release
+      - name: Gather
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/tartarus-overlay.exe dist/
+      # Optional code signing (Azure Trusted Signing): runs only once the repository has these secrets:
+      # AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, SIGNING_ENDPOINT, SIGNING_ACCOUNT, SIGNING_PROFILE
+      # (see SIGNING.md). Without them the files are published unsigned, as before.
+      - name: Sign
+        if: ${{ env.HAS_SIGNING == 'true' }}
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Checksum
+        shell: pwsh
+        run: |
+          "{0}  tartarus-overlay.exe" -f (Get-FileHash -Algorithm SHA256 dist/tartarus-overlay.exe).Hash.ToLower() | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
       - name: Version
         id: version
         shell: pwsh
@@ -30,16 +60,23 @@ jobs:
           target_commitish: ${{ github.sha }}
           draft: true
           body: |
-            Download `tartarus-overlay.exe`, start it, then play Tartarus Prison. It draws a green box around the best
-            choice, nothing else: no console, no files. Ctrl+Alt+B boxes on/off, Ctrl+Alt+R read again, Ctrl+Alt+Q
-            quit (it also quits a couple of minutes after the game closes).
+            Download `tartarus-overlay.exe`, start it, then play Tartarus Prison. It draws a box around the best
+            choice. Quit or change settings from its icon next to the clock (hotkeys by default: Ctrl+Alt+B boxes
+            on/off, Ctrl+Alt+R read again, Ctrl+Alt+Q quit; it also quits a couple of minutes after the game closes).
+
+            It only draws on top of the game: it never sends a click, a key or any input to it, and never reads or
+            changes the game's memory or files. An independent fan tool, not affiliated with the makers of
+            Torchlight: Infinite. Provided as is, without warranty (MIT license).
+
+            `SHA256SUMS.txt` holds the file's SHA-256: in PowerShell, `Get-FileHash tartarus-overlay.exe` should show
+            the same.
       - name: Attach the file and publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ steps.version.outputs.tag }}"
-          $out = gh release upload $tag target/release/tartarus-overlay.exe --clobber --repo ${{ github.repository }} 2>&1
+          $out = gh release upload $tag dist/tartarus-overlay.exe SHA256SUMS.txt --clobber --repo ${{ github.repository }} 2>&1
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::upload failed: $out"; exit 1 }
           gh release edit $tag --draft=false --repo ${{ github.repository }}

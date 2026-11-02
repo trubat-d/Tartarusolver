@@ -158,7 +158,7 @@ mod win {
                 m |= MOD_WIN.0;
             }
             if RegisterHotKey(hwnd, id, HOT_KEY_MODIFIERS(m), vk).is_err() {
-                say!("  [!] hotkey {key} is taken by another program (change it in Settings, from the tray icon)");
+                say_line(format!("  [!] hotkey {key} is taken by another program (change it in Settings, from the tray icon)"));
             }
         }
     }
@@ -455,7 +455,7 @@ mod win {
                 let (title, head, body) = (font(-28, 600), font(-17, 600), font(-15, 400));
                 SetBkMode(hdc, TRANSPARENT);
                 let mut y = 22;
-                let mut draw = |f: HFONT, color: u32, text: &str, y: &mut i32, gap: i32| {
+                let draw = |f: HFONT, color: u32, text: &str, y: &mut i32, gap: i32| {
                     let old = SelectObject(hdc, f);
                     SetTextColor(hdc, COLORREF(color));
                     let mut t: Vec<u16> = text.encode_utf16().collect();
@@ -755,6 +755,11 @@ mod win {
                 }
             }
         }};
+    }
+
+    /// `say!` for code written above the macro.
+    fn say_line(line: String) {
+        say!("{line}");
     }
 
     fn now_parts() -> (i32, u32, u32, u32, u32, u32) {
