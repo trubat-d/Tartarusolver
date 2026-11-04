@@ -23,6 +23,9 @@ Whether a tool like this is allowed is set by the game's terms of service: check
 1. In the game's settings, turn on **Enable log**. The overlay follows the game through its log file (UE_game.log):
    without it, it can only guess from the screen, and misses or misreads some screens and the day.
 2. Download `tartarus-overlay.exe` from the [latest release](../../releases/latest).
+   Since 0.16 there are three versions: `tartarus-overlay.exe` (the solver, its futures played by rules, as before),
+   `tartarus-overlay-net.exe` (the solver with its futures played by a trained network: better picks, same CPU) and
+   `tartarus-overlay-netonly.exe` (the network alone: instant and nearly no CPU, but weaker picks).
 3. Start it, read the notice, click **I accept**, then play Tartarus Prison.
 
 Its icon sits next to the clock (it may be under the "^" arrow): click it for **Boxes on/off**, **Settings...** and

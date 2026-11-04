@@ -1,7 +1,7 @@
 [package]
 name = "tartarus"
 description = "Screen overlay for Tartarus Prison in Torchlight: Infinite: boxes the best choice (read-only advice; never plays the game)"
-version = "0.15.5"
+version = "0.16.0"
 edition = "2021"
 license = "MIT"
 
@@ -12,6 +12,10 @@ path = "src/bin/tartarus-overlay.rs"
 [features]
 # no console, nothing written to disk, only the boxes
 default = ["lite"]
+# tartarus-overlay-net.exe: the solver's futures played by the policy network (data/policy.json) instead of the rules
+net = []
+# tartarus-overlay-netonly.exe: the policy network alone picks, no futures (instant, nearly no CPU; weaker)
+net-only = []
 lite = []
 
 [build-dependencies]

@@ -23,6 +23,15 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/tartarus-overlay.exe dist/
+      - name: Build the network overlays
+        shell: pwsh
+        run: |
+          foreach ($v in @(@("net", "net"), @("net-only", "netonly"))) {
+            $f, $n = $v
+            cargo build --release --features $f
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            Copy-Item target/release/tartarus-overlay.exe "dist/tartarus-overlay-$n.exe"
+          }
       # Optional code signing (Azure Trusted Signing): runs only once the repository has these secrets:
       # AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, SIGNING_ENDPOINT, SIGNING_ACCOUNT, SIGNING_PROFILE
       # (see SIGNING.md). Without them the files are published unsigned, as before.
@@ -44,7 +53,8 @@ jobs:
       - name: Checksum
         shell: pwsh
         run: |
-          "{0}  tartarus-overlay.exe" -f (Get-FileHash -Algorithm SHA256 dist/tartarus-overlay.exe).Hash.ToLower() | Set-Content -Encoding ascii SHA256SUMS.txt
+          $lines = foreach ($f in @("tartarus-overlay.exe", "tartarus-overlay-net.exe", "tartarus-overlay-netonly.exe")) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 "dist/$f").Hash.ToLower(), $f }
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
           Get-Content SHA256SUMS.txt
       - name: Version
         id: version
@@ -66,19 +76,27 @@ jobs:
             choice. Quit or change settings from its icon next to the clock (hotkeys by default: Ctrl+Alt+B boxes
             on/off, Ctrl+Alt+R read again, Ctrl+Alt+Q quit; it also quits a couple of minutes after the game closes).
 
+            Three versions, the same overlay with a different way of picking:
+            - `tartarus-overlay.exe`: the solver, its imagined futures played by hand-written rules (as before).
+            - `tartarus-overlay-net.exe`: the solver, its futures played by a trained policy network. In tests on 1,200
+              runs: 7.31 Chromatics per run against 6.93, and 34% of runs reaching 10 against 26%, in the same time
+              and CPU.
+            - `tartarus-overlay-netonly.exe`: the network alone, no futures: instant and nearly no CPU, but weaker
+              (about 6.0 Chromatics per run).
+
             It only draws on top of the game: it never sends a click, a key or any input to it, and never reads or
             changes the game's memory or files. An independent fan tool, not affiliated with the makers of
             Torchlight: Infinite. Provided as is, without warranty (MIT license).
 
             `SHA256SUMS.txt` holds the file's SHA-256: in PowerShell, `Get-FileHash tartarus-overlay.exe` should show
-            the same.
+            the same (likewise for the other two).
       - name: Attach the file and publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ steps.version.outputs.tag }}"
-          $out = gh release upload $tag dist/tartarus-overlay.exe SHA256SUMS.txt --clobber --repo ${{ github.repository }} 2>&1
+          $out = gh release upload $tag dist/tartarus-overlay.exe dist/tartarus-overlay-net.exe dist/tartarus-overlay-netonly.exe SHA256SUMS.txt --clobber --repo ${{ github.repository }} 2>&1
           Write-Output $out
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::upload failed: $out"; exit 1 }
           gh release edit $tag --draft=false --repo ${{ github.repository }}

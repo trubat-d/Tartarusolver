@@ -151,6 +151,93 @@ fn fill(s: &State, f: &mut Feats) {
     debug_assert_eq!(f.n, N_FEATURES);
 }
 
+/// The n-tuple board value's tuples: 3 cells side by side, at each of the 16 places counted from the warden's cell, and
+/// the days left with the Chromatics. The 7 places nearest ahead (within a walk's reach) have their own table, the
+/// rest share one (8 tables).
+pub const NT_TUPLES: usize = CELLS;
+pub const NT_OWN: usize = 7;
+/// Values a cell takes: locked, empty, the office, or an Inmate (4 Codes x 5 rarities).
+pub const NT_CELL: usize = 23;
+pub const NT_TABLE: usize = NT_CELL * NT_CELL * NT_CELL;
+/// The days-and-Chromatics table: 21 x 11.
+pub const NT_DAYS: usize = 21 * 11;
+
+fn nt_cell(s: &State, i: usize) -> usize {
+    match s.cells[i] {
+        Cell::Locked => 0,
+        Cell::Empty => 1,
+        Cell::Office => 2,
+        Cell::Inmate(m) => {
+            let c = Code::ALL.iter().position(|&x| x == m.code).unwrap_or(0);
+            3 + c * 5 + (m.rarity as usize).min(4)
+        }
+    }
+}
+
+/// The board as n-tuple indices: for each tuple its entry in its table (tables laid out one after the other), then the
+/// days-and-Chromatics entry.
+pub fn ntuple_indices(s: &State) -> [usize; NT_TUPLES + 1] {
+    let mut out = [0usize; NT_TUPLES + 1];
+    for d in 0..NT_TUPLES {
+        let a = nt_cell(s, (s.pos + d) % CELLS);
+        let b = nt_cell(s, (s.pos + d + 1) % CELLS);
+        let c = nt_cell(s, (s.pos + d + 2) % CELLS);
+        out[d] = d.min(NT_OWN) * NT_TABLE + (a * NT_CELL + b) * NT_CELL + c;
+    }
+    let days = (s.days_left as usize).min(20);
+    out[NT_TUPLES] = (NT_OWN + 1) * NT_TABLE + days * 11 + (s.chromatics as usize).min(10);
+    out
+}
+
+/// The n-tuple board value: a sum of table entries (the board, 16 lookups) and a linear term on the features (the
+/// instruments, the objective, the marks...). About ten times cheaper than the network.
+pub struct NTuple {
+    tables: Vec<f32>,
+    linear: Vec<f32>,
+    bias: f32,
+}
+
+impl NTuple {
+    pub fn from_json(v: &serde_json::Value) -> Option<NTuple> {
+        let vecf = |x: &serde_json::Value| -> Option<Vec<f32>> {
+            x.as_array()?.iter().map(|y| y.as_f64().map(|z| z as f32)).collect()
+        };
+        let tables = vecf(&v["tables"])?;
+        let linear = vecf(&v["linear"])?;
+        (tables.len() == (NT_OWN + 1) * NT_TABLE + NT_DAYS && linear.len() == N_FEATURES).then(|| NTuple {
+            tables,
+            linear,
+            bias: v["bias"].as_f64().unwrap_or(0.0) as f32,
+        })
+    }
+
+    pub fn eval(&self, s: &State) -> f64 {
+        let mut out = self.bias;
+        for i in ntuple_indices(s) {
+            out += self.tables[i];
+        }
+        let mut f = Feats::default();
+        fill(s, &mut f);
+        for (x, w) in f.v.iter().zip(&self.linear) {
+            out += x * w;
+        }
+        out as f64
+    }
+}
+
+/// The n-tuple model, from data/ntuple.json (or env NTUPLE_JSON), when there's one.
+pub fn ntuple() -> Option<&'static NTuple> {
+    static M: std::sync::OnceLock<Option<NTuple>> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        let p = std::env::var("NTUPLE_JSON").unwrap_or_else(|_| {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/data/ntuple.json").to_string()
+        });
+        let text = std::fs::read_to_string(p).ok()?;
+        serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| NTuple::from_json(&v))
+    })
+    .as_ref()
+}
+
 /// A small network (one hidden layer) over the features, loaded from data/value.json.
 pub struct Model {
     /// The first layer with the features' normalisation folded in, by feature: hidden k = sum over features i of
@@ -228,7 +315,9 @@ impl Model {
 pub fn model() -> Option<&'static Model> {
     static M: std::sync::OnceLock<Option<Model>> = std::sync::OnceLock::new();
     M.get_or_init(|| {
-        let text = include_str!("../data/value.json");
+        // VALUE_JSON: another model's file, to compare models on the same runs
+        let file = std::env::var("VALUE_JSON").ok().and_then(|p| std::fs::read_to_string(p).ok());
+        let text = file.as_deref().unwrap_or(include_str!("../data/value.json"));
         serde_json::from_str::<serde_json::Value>(text)
             .ok()
             .and_then(|v| Model::from_json(&v))
@@ -240,7 +329,9 @@ pub fn model() -> Option<&'static Model> {
 pub fn model10() -> Option<&'static Model> {
     static M: std::sync::OnceLock<Option<Model>> = std::sync::OnceLock::new();
     M.get_or_init(|| {
-        let text = include_str!("../data/value10.json");
+        // VALUE10_JSON: another model's file, to compare models on the same runs
+        let file = std::env::var("VALUE10_JSON").ok().and_then(|p| std::fs::read_to_string(p).ok());
+        let text = file.as_deref().unwrap_or(include_str!("../data/value10.json"));
         serde_json::from_str::<serde_json::Value>(text)
             .ok()
             .and_then(|v| Model::from_json(&v))

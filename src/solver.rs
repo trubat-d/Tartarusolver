@@ -143,6 +143,9 @@ pub fn actions(s: &State, phase: &Phase) -> Vec<Action> {
 
 /// Plays `a` now, then the rest of the run.
 fn play(mut s: State, a: Action, rng: &mut Rng) -> State {
+    if let Some(net) = rollout_net() {
+        return play_net(s, a, rng, net);
+    }
     match a {
         Action::Go(i) => {
             // a Sewer Ratway jump, or the day's walk
@@ -196,6 +199,69 @@ fn play(mut s: State, a: Action, rng: &mut Rng) -> State {
         None => policy::finish(&mut s, rng),
     }
     s
+}
+
+/// The policy network that plays the futures instead of the rules (env ROLLOUT_NET, with POLICY_JSON; experimental).
+fn rollout_net() -> Option<&'static crate::policy_net::Net> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| cfg!(feature = "net") || std::env::var("ROLLOUT_NET").is_ok()) {
+        crate::policy_net::net()
+    } else {
+        None
+    }
+}
+
+/// Plays `a` now, then the rest of the run with the policy network making every choice.
+fn play_net(mut s: State, a: Action, rng: &mut Rng, net: &crate::policy_net::Net) -> State {
+    use crate::selfplay::{decide_day, picks, play_run};
+    let mut choose = |s: &State, p: &Phase, r: &mut Rng| net.choose(s, p, r);
+    let pos = s.pos;
+    match a {
+        Action::Go(i) => {
+            if s.ratway {
+                s.warp(i, rng);
+            } else {
+                s.go(i, rng);
+            }
+            picks(&mut s, rng, &mut choose);
+            decide_day(&mut s, rng, &mut choose);
+        }
+        Action::Consume(j) => {
+            s.consume(pos, j, rng);
+            picks(&mut s, rng, &mut choose);
+            decide_day(&mut s, rng, &mut choose);
+        }
+        Action::Hunt(j) => s.start_hunt(j),
+        Action::Replace => s.replace(pos, rng),
+        Action::End => {}
+        Action::Instigate => s.instigate(rng),
+        Action::Bestow => s.bestow(rng),
+        Action::Take(i) => {
+            s.setup.instruments.add(i);
+            picks(&mut s, rng, &mut choose);
+            decide_day(&mut s, rng, &mut choose);
+        }
+        Action::Reroll => {
+            s.rerolls = s.rerolls.saturating_sub(1);
+            let offer = s.instrument_offer(rng);
+            if let Action::Take(i) = choose(&s, &Phase::Instrument(offer), rng) {
+                s.setup.instruments.add(i);
+            }
+            picks(&mut s, rng, &mut choose);
+            decide_day(&mut s, rng, &mut choose);
+        }
+        Action::Pick(t) => {
+            s.treasure(t, rng);
+            picks(&mut s, rng, &mut choose);
+            // a pick in the middle of eating: the eating goes on (no second action for the day otherwise)
+            if s.bites_today > 0 && matches!(s.cells[s.pos], Cell::Inmate(_)) {
+                decide_day(&mut s, rng, &mut choose);
+            }
+        }
+    }
+    picks(&mut s, rng, &mut choose);
+    policy::end_day(&mut s);
+    play_run(s, rng, &mut choose)
 }
 
 /// Futures cut short after this many days and finished by the board value (env TH), when a model is loaded.
@@ -332,6 +398,9 @@ impl Sums {
 /// behind the best (by more than both margins together) stop there, the others go on, doubling, up to `futures`;
 /// then the close calls get 4 times the futures. Most of the work goes to the options that could be best.
 pub fn evaluate_race(s: &State, phase: &Phase, futures: usize, seed: u64) -> Vec<Outcome> {
+    if let Some(net) = crate::policy_net::net_only() {
+        return crate::policy_net::outcomes(net, s, phase, seed);
+    }
     let acts = actions(s, phase);
     if acts.len() < 2 {
         return evaluate(s, phase, futures, seed);
@@ -435,6 +504,21 @@ pub fn evaluate_adaptive(s: &State, phase: &Phase, futures: usize, seed: u64) ->
 /// rest by the rules), since the order matters (opening cells first, then raising them). Returns each first pick
 /// with its best follow-up.
 pub fn evaluate_treasure_pairs(s: &State, futures: usize, seed: u64) -> Vec<(Outcome, Treasure)> {
+    if let Some(net) = crate::policy_net::net_only() {
+        // each first pick with the network's second pick after it
+        let mut rng = Rng::new(seed);
+        return crate::policy_net::outcomes(net, s, &Phase::Treasure, seed)
+            .into_iter()
+            .map(|o| {
+                let next = crate::policy_net::after(s, o.action, &mut rng);
+                let t2 = match net.choose(&next, &Phase::Treasure, &mut rng) {
+                    Action::Pick(t) => t,
+                    _ => Treasure::ALL[0],
+                };
+                (o, t2)
+            })
+            .collect();
+    }
     progress_start(Treasure::ALL.len() * Treasure::ALL.len() * futures);
     let mut out: Vec<(Outcome, Treasure)> = Treasure::ALL
         .into_iter()
@@ -477,6 +561,9 @@ pub fn evaluate_treasure_pairs(s: &State, futures: usize, seed: u64) -> Vec<(Out
 }
 
 pub fn evaluate(s: &State, phase: &Phase, futures: usize, seed: u64) -> Vec<Outcome> {
+    if let Some(net) = crate::policy_net::net_only() {
+        return crate::policy_net::outcomes(net, s, phase, seed);
+    }
     progress_start(actions(s, phase).len() * futures);
     let mut out: Vec<Outcome> = actions(s, phase)
         .into_iter()

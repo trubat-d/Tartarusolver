@@ -2345,6 +2345,11 @@ mod win {
             }
         }
         say!("Tartarus overlay {VERSION}: advice only, it never touches the game.");
+        if cfg!(feature = "net-only") {
+            say!("Network-only build: the network alone picks (no futures); its scores are relative, not Chromatics.");
+        } else if cfg!(feature = "net") {
+            say!("Network build: the solver's futures are played by the policy network.");
+        }
         say!("");
         say!("Checks:");
         let log = std::env::args()
